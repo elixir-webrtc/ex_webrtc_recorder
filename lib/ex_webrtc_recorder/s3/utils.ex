@@ -1,4 +1,4 @@
-if Enum.each([ExAws.S3, ExAws, SweetXml], &Code.ensure_loaded?/1) do
+if Code.ensure_loaded?(ExAws.S3) do
   defmodule ExWebRTC.Recorder.S3.Utils do
     @moduledoc false
 

@@ -1,4 +1,4 @@
-if Enum.each([ExAws.S3, ExAws, SweetXml], &Code.ensure_loaded?/1) do
+if Code.ensure_loaded?(ExAws.S3) do
   defmodule ExWebRTC.Recorder.S3.UploadHandler do
     @moduledoc false
 
@@ -123,7 +123,7 @@ else
   defmodule ExWebRTC.Recorder.S3.UploadHandler do
     @moduledoc false
 
-    @opaque ref :: term()
+    @opaque ref :: nil
 
     def new(_), do: error()
     def spawn_task(_, _), do: error()
