@@ -86,10 +86,15 @@ defmodule ExWebRTC.Recorder.Converter do
   @type options :: [option()]
 
   @doc """
-  Loads the recording manifest from file, then proceeds with `convert_manifest!/2`.
+  Converts the saved dumps of tracks in the manifest to WEBM files.
+
+  If passed a path as the first argument, loads the recording manifest from file.
   """
-  @spec convert_path!(Path.t(), options()) :: __MODULE__.Manifest.t() | no_return()
-  def convert_path!(recorder_manifest_path, options \\ []) do
+  @spec convert!(Path.t() | Recorder.Manifest.t(), options()) ::
+          __MODULE__.Manifest.t() | no_return()
+  def convert!(recorder_manifest_or_path, options \\ [])
+
+  def convert!(recorder_manifest_path, options) when is_binary(recorder_manifest_path) do
     recorder_manifest_path =
       recorder_manifest_path
       |> Path.expand()
@@ -106,17 +111,10 @@ defmodule ExWebRTC.Recorder.Converter do
       |> Jason.decode!()
       |> Recorder.Manifest.from_json!()
 
-    convert_manifest!(recorder_manifest, options)
+    convert!(recorder_manifest, options)
   end
 
-  @doc """
-  Converts the saved dumps of tracks in the manifest to WEBM files.
-  """
-  @spec convert_manifest!(Recorder.Manifest.t(), options()) ::
-          __MODULE__.Manifest.t() | no_return()
-  def convert_manifest!(recorder_manifest, options \\ [])
-
-  def convert_manifest!(manifest, options) when map_size(manifest) > 0 do
+  def convert!(recorder_manifest, options) when map_size(recorder_manifest) > 0 do
     thumbnails_ctx =
       case Keyword.get(options, :thumbnails_ctx, nil) do
         nil ->
@@ -143,7 +141,7 @@ defmodule ExWebRTC.Recorder.Converter do
       end
 
     output_manifest =
-      manifest
+      recorder_manifest
       |> fetch_remote_files!(download_path, download_config)
       |> do_convert_manifest!(output_path, thumbnails_ctx)
 
@@ -170,7 +168,7 @@ defmodule ExWebRTC.Recorder.Converter do
     result_manifest
   end
 
-  def convert_manifest!(_empty_manifest, _options), do: %{}
+  def convert!(_empty_manifest, _options), do: %{}
 
   defp fetch_remote_files!(manifest, dl_path, dl_config) do
     Map.new(manifest, fn {track_id, %{location: location} = track_data} ->

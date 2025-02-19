@@ -56,8 +56,12 @@ if Enum.each([ExAws.S3, ExAws, SweetXml], &Code.ensure_loaded?/1) do
           {id, %{object_data | location: location}}
         end)
 
-      # FIXME: this links, ideally we should spawn a supervised task instead
-      task = Task.async(fn -> upload(manifest, bucket_name, s3_paths, s3_config_overrides) end)
+      # FIXME: this links, ideally we should use `async_nolink` instead
+      #        but this may require a slight change of the current UploadHandler logic
+      task =
+        Task.Supervisor.async(ExWebRTC.Recorder.TaskSupervisor, fn ->
+          upload(manifest, bucket_name, s3_paths, s3_config_overrides)
+        end)
 
       {task.ref,
        %__MODULE__{handler | tasks: Map.put(handler.tasks, task.ref, download_manifest)}}
