@@ -56,7 +56,7 @@ defmodule ExWebRTC.Recorder.MixProject do
 
   defp deps do
     [
-      {:ex_webrtc, github: "elixir-webrtc/ex_webrtc", branch: "sgfn/extract-recorder"},
+      {:ex_webrtc, github: "elixir-webrtc/ex_webrtc"},
       {:jason, "~> 1.4"},
       {:ex_aws_s3, "~> 2.5", optional: true},
       {:ex_aws, "~> 2.5", optional: true},
