@@ -16,6 +16,7 @@ defmodule ExWebRTC.Recorder.MixProject do
       deps: deps(),
 
       # docs
+      docs: docs(),
       source_url: @source_url,
 
       # dialyzer
@@ -67,6 +68,16 @@ defmodule ExWebRTC.Recorder.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md"],
+      source_ref: "v#{@version}",
+      formatters: ["html"],
+      nest_modules_by_prefix: [ExWebRTC.Recorder]
     ]
   end
 end

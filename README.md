@@ -17,14 +17,13 @@ def deps do
 end
 ```
 
-TODO add necessary steps
+If you want to use Converter to generate WEBM files from the recordings,
+you need to have the `ffmpeg` binary with the relevant libraries present in `PATH`.
+
+### S3
 
 ExWebRTC Recorder comes with optional support for uploading the recordings to S3-compatible storage,
-but it must be explicitely turned on by adding the following optional dependencies:
-* `:ex_aws_s3`
-* `:ex_aws`
-* `:sweet_xml`
-* an HTTP client (e.g. `:req`)
+but it must be explicitly turned on by adding the following dependencies:
 
 ```elixir
 def deps do
@@ -33,7 +32,9 @@ def deps do
     {:ex_aws_s3, "~> 2.5"},
     {:ex_aws, "~> 2.5"},
     {:sweet_xml, "~> 0.7"},
-    {:req, "~> 0.5"}
+    {:req, "~> 0.5"}         # or any other HTTP client supported by `ex_aws`
   ]
 end
 ```
+
+See `ExWebRTC.Recorder.S3` for more info.
