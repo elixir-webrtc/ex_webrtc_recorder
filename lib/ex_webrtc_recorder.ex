@@ -48,6 +48,22 @@ defmodule ExWebRTC.Recorder do
            {:upload_complete, S3.upload_task_ref(), __MODULE__.Manifest.t()}
            | {:upload_failed, S3.upload_task_ref(), __MODULE__.Manifest.t()}}
 
+  @typedoc """
+  Tuple returned on successful call to `end_tracks/2`.
+
+  Contains the part of the recording manifest that's relevant to the freshly ended tracks.
+  See `t:ExWebRTC.Recorder.Manifest.t/0` for more info.
+
+  If uploads are configured:
+  * Contains the reference to the upload task that was spawned.
+  * Recorder will send the `:upload_complete`/`:upload_failed` message with this reference
+    to its controlling process when the task finishes.
+
+  Note that the manifest returned by `end_tracks/2` always contains local paths to files.
+  The updated manifest with `s3://` scheme URLs is sent in the aforementioned message.
+  """
+  @type end_tracks_ok_result :: {:ok, __MODULE__.Manifest.t(), S3.upload_task_ref() | nil}
+
   # Necessary to start Recorder under a supervisor using `{Recorder, [recorder_opts, gen_server_opts]}`
   @doc false
   @spec child_spec(list()) :: Supervisor.child_spec()
@@ -126,19 +142,10 @@ defmodule ExWebRTC.Recorder do
   @doc """
   Finishes the recording for the given tracks and optionally uploads the result files.
 
-  Returns the part of the recording manifest that's relevant to the freshly ended tracks.
-  See `t:ExWebRTC.Recorder.Manifest.t/0` for more info.
-
-  If uploads are configured:
-  * Returns the reference to the upload task that was spawned.
-  * Will send the `:upload_complete`/`:upload_failed` message with this reference
-    to the controlling process when the task finishes.
-
-  Note that the manifest returned by this function always contains local paths to files.
-  The updated manifest with `s3://` scheme URLs is sent in the aforementioned message.
+  See `t:end_tracks_ok_result/0` for the success typing.
   """
   @spec end_tracks(recorder(), [MediaStreamTrack.id()]) ::
-          {:ok, __MODULE__.Manifest.t(), S3.upload_task_ref() | nil} | {:error, :tracks_not_found}
+          end_tracks_ok_result() | {:error, :tracks_not_found}
   def end_tracks(recorder, track_ids) do
     GenServer.call(recorder, {:end_tracks, track_ids})
   end
