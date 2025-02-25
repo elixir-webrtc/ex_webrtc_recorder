@@ -50,6 +50,11 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
     round(duration_seconds)
   end
 
+  defp calculate_start_times(video_start_ms, audio_start_ms)
+       when is_nil(video_start_ms) or is_nil(audio_start_ms) do
+    {"00:00:00.000", "00:00:00.000"}
+  end
+
   defp calculate_start_times(video_start_ms, audio_start_ms) do
     diff = abs(video_start_ms - audio_start_ms)
     s = div(diff, 1000)

@@ -232,6 +232,8 @@ defmodule ExWebRTC.Recorder.Converter do
       end)
 
     # FIXME: This won't work if we have audio/video only
+    IO.inspect(stream_map, label: :STREAM_MAP_IS)
+
     for {stream_id, %{video: video_files, audio: audio_files}} <- stream_map,
         {rid, %{filename: video_file, start_time: video_start}} <- video_files,
         {nil, %{filename: audio_file, start_time: audio_start}} <- audio_files,
