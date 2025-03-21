@@ -65,7 +65,7 @@ defmodule ExWebRTC.Recorder.Converter do
         }
 
   @typedoc """
-  Options that can be passed to `convert_manifest!/2` and `convert_path!/2`.
+  Options that can be passed to `convert!/2`.
 
   * `:output_path` - Directory where Converter will save its artifacts. `#{@default_output_path}` by default.
   * `:s3_upload_config` - If passed, processed recordings will be uploaded to S3-compatible storage.
@@ -75,6 +75,11 @@ defmodule ExWebRTC.Recorder.Converter do
     See `t:ExWebRTC.Recorder.S3.override_config/0` for more info.
   * `:thumbnails_ctx` - If passed, Converter will generate thumbnails for the output files.
     See `t:thumbnails_ctx/0` for more info.
+  * `:only_rids` - By default, when processing a video track with multiple layers (i.e. simulcast),
+    Converter generates multiple output files, one per layer. If passed, Converter will only process
+    the layers with RIDs present in this list. E.g. if you want to receive a single video file
+    from the layer `"h"`, pass `["h"]`. For single-layer tracks RID is set to `nil`,
+    so if you want to handle both simulcast and regular tracks, pass `["h", nil]`.
   """
   @type option ::
           {:output_path, Path.t()}
@@ -82,6 +87,7 @@ defmodule ExWebRTC.Recorder.Converter do
           | {:download_path, Path.t()}
           | {:s3_download_config, keyword()}
           | {:thumbnails_ctx, thumbnails_ctx()}
+          | {:only_rids, [ExWebRTC.MediaStreamTrack.rid() | nil]}
 
   @type options :: [option()]
 
@@ -116,7 +122,7 @@ defmodule ExWebRTC.Recorder.Converter do
 
   def convert!(recorder_manifest, options) when map_size(recorder_manifest) > 0 do
     thumbnails_ctx =
-      case Keyword.get(options, :thumbnails_ctx, nil) do
+      case Keyword.get(options, :thumbnails_ctx) do
         nil ->
           nil
 
@@ -125,6 +131,15 @@ defmodule ExWebRTC.Recorder.Converter do
             width: ctx[:width] || @default_thumbnail_width,
             height: ctx[:height] || @default_thumbnail_height
           }
+      end
+
+    rid_allowed? =
+      case Keyword.get(options, :only_rids) do
+        nil ->
+          fn _rid -> true end
+
+        allowed_rids ->
+          fn rid -> Enum.member?(allowed_rids, rid) end
       end
 
     output_path = Keyword.get(options, :output_path, @default_output_path) |> Path.expand()
@@ -143,7 +158,7 @@ defmodule ExWebRTC.Recorder.Converter do
     output_manifest =
       recorder_manifest
       |> fetch_remote_files!(download_path, download_config)
-      |> do_convert_manifest!(output_path, thumbnails_ctx)
+      |> do_convert_manifest!(output_path, thumbnails_ctx, rid_allowed?)
 
     result_manifest =
       if upload_handler != nil do
@@ -158,6 +173,12 @@ defmodule ExWebRTC.Recorder.Converter do
             {^ref, _res} = task_result ->
               S3.UploadHandler.process_result(upload_handler, task_result)
           end
+
+        # UploadHandler spawns a task that gets auto-monitored
+        # We don't want to propagate this message
+        receive do
+          {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+        end
 
         upload_handler_result_manifest
         |> __MODULE__.Manifest.from_upload_handler_manifest(output_manifest)
@@ -197,7 +218,7 @@ defmodule ExWebRTC.Recorder.Converter do
     end
   end
 
-  defp do_convert_manifest!(manifest, output_path, thumbnails_ctx) do
+  defp do_convert_manifest!(manifest, output_path, thumbnails_ctx, rid_allowed?) do
     stream_map =
       Enum.reduce(manifest, %{}, fn {id, track}, stream_map ->
         %{
@@ -218,6 +239,8 @@ defmodule ExWebRTC.Recorder.Converter do
         output_metadata =
           case kind do
             :video ->
+              rid_map = filter_rids(rid_map, rid_allowed?)
+
               convert_video_track(id, rid_map, output_path, packets)
 
             :audio ->
@@ -404,5 +427,9 @@ defmodule ExWebRTC.Recorder.Converter do
         Logger.warning("Decoded late RTP packet")
         store
     end
+  end
+
+  defp filter_rids(rid_map, rid_allowed?) do
+    Map.filter(rid_map, fn {rid, _rid_idx} -> rid_allowed?.(rid) end)
   end
 end
