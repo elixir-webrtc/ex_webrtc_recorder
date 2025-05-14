@@ -17,7 +17,8 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
     {_io, 0} =
       System.cmd(
         "ffmpeg",
-        ~w(-ss #{video_start_time} -i #{video_file} -ss #{audio_start_time} -i #{audio_file} -c:v copy -c:a copy -shortest #{output_file}),
+        # FIXME: we're assuming a lot here
+        ~w(-ss #{video_start_time} -i #{video_file} -ss #{audio_start_time} -i #{audio_file} -c:v vp8 -threads 8 -b:v 1.5M -cues_to_front 1 -g 150 -c:a copy -shortest #{output_file}),
         stderr_to_stdout: true
       )
 
