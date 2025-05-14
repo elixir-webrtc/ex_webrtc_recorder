@@ -12,7 +12,7 @@ Add `:ex_webrtc_recorder` to your list of dependencies
 ```elixir
 def deps do
   [
-    {:ex_webrtc_recorder, "~> 0.2.0"}
+    {:ex_webrtc_recorder, "~> 0.2.1"}
   ]
 end
 ```
@@ -28,7 +28,7 @@ but it must be explicitly turned on by adding the following dependencies:
 ```elixir
 def deps do
   [
-    {:ex_webrtc_recorder, "~> 0.1.0"},
+    {:ex_webrtc_recorder, "~> 0.2.1"},
     {:ex_aws_s3, "~> 2.5"},
     {:ex_aws, "~> 2.5"},
     {:sweet_xml, "~> 0.7"},
