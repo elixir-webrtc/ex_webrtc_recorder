@@ -18,7 +18,7 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
       System.cmd(
         "ffmpeg",
         # FIXME: we're assuming a lot here
-        ~w(-ss #{video_start_time} -i #{video_file} -ss #{audio_start_time} -i #{audio_file} -c:v vp8 -threads 8 -b:v 1.5M -cues_to_front 1 -g 150 -c:a copy -shortest #{output_file}),
+        ~w(-ss #{video_start_time} -i #{video_file} -ss #{audio_start_time} -i #{audio_file} -c:v vp8 -b:v 1.5M -cues_to_front 1 -g 150 -c:a copy -shortest #{output_file}),
         stderr_to_stdout: true
       )
 
@@ -58,9 +58,11 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
 
   defp calculate_start_times(video_start_ms, audio_start_ms) do
     diff = abs(video_start_ms - audio_start_ms)
-    s = div(diff, 1000)
-    ms = rem(diff, 1000)
-    delayed_start_time = :io_lib.format("00:00:~2..0w.~3..0w", [s, ms]) |> to_string()
+    millis = rem(diff, 1000)
+    seconds = div(diff, 1000) |> rem(60)
+    minutes = div(diff, 60_000)
+
+    delayed_start_time = :io_lib.format("00:~2..0w:~2..0w.~3..0w", [minutes, seconds, millis]) |> to_string()
 
     if video_start_ms > audio_start_ms,
       do: {"00:00:00.000", delayed_start_time},
