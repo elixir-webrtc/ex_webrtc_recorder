@@ -12,25 +12,13 @@ defmodule ExWebRTC.Recorder.Converter do
 
   alias ExWebRTC.RTP.JitterBuffer.PacketStore
   alias ExWebRTC.RTP.Depayloader
-  alias ExWebRTC.Media.{IVF, Ogg}
 
   alias ExWebRTC.Recorder.S3
   alias ExWebRTC.{Recorder, RTPCodecParameters}
 
-  alias __MODULE__.FFmpeg
+  alias __MODULE__.{FFmpeg, Pipeline}
 
   require Logger
-
-  # TODO: Allow changing these values
-  @ivf_header_opts [
-    # <<fourcc::little-32>> = "VP80"
-    fourcc: 808_996_950,
-    height: 720,
-    width: 1280,
-    num_frames: 1024,
-    timebase_denum: 30,
-    timebase_num: 1
-  ]
 
   # TODO: Support codecs other than VP8/Opus
   @video_codec_params %RTPCodecParameters{
@@ -50,6 +38,10 @@ defmodule ExWebRTC.Recorder.Converter do
   @default_download_path "./converter/download"
   @default_thumbnail_width 640
   @default_thumbnail_height -1
+  @default_reorder_buffer_size 100
+  @default_reencode_bitrate "1.5M"
+  @default_reencode_gop_size 125
+  @default_reencode_cues_to_front true
 
   @typedoc """
   Context for the thumbnail generation.
@@ -62,6 +54,22 @@ defmodule ExWebRTC.Recorder.Converter do
   @type thumbnails_ctx :: %{
           optional(:width) => pos_integer() | -1,
           optional(:height) => pos_integer() | -1
+        }
+
+  @typedoc """
+  Context for the video reencoding. See `man ffmpeg` for more details.
+
+  * `:threads` - How many threads to use. Unlimited by default.
+  * `:bitrate` - Video bitrate the VP8 encoder shall strive for. `#{@default_reencode_bitrate}` by default.
+  * `:gop_size` - Keyframe interval. #{@default_reencode_gop_size} by default.
+  * `:cues_to_front` - Whether the muxer should put MKV Cues element at the front of the file,
+    to aid with seeking e.g. when streaming the result file. #{@default_reencode_cues_to_front} by default.
+  """
+  @type reencode_ctx :: %{
+          optional(:threads) => pos_integer(),
+          optional(:bitrate) => String.t(),
+          optional(:gop_size) => pos_integer(),
+          optional(:cues_to_front) => boolean()
         }
 
   @typedoc """
@@ -80,6 +88,11 @@ defmodule ExWebRTC.Recorder.Converter do
     the layers with RIDs present in this list. E.g. if you want to receive a single video file
     from the layer `"h"`, pass `["h"]`. For single-layer tracks RID is set to `nil`,
     so if you want to handle both simulcast and regular tracks, pass `["h", nil]`.
+  * `:reorder_buffer_size` - Size of the buffer used for reordering late packets. `#{@default_reorder_buffer_size}` by default.
+    Increasing this value may help with "Decoded late RTP packet" warnings,
+    but keep in mind that larger values slow the conversion process considerably.
+  * `:reencode_ctx` - If passed, Converter will reencode the video using FFmpeg.
+    See `t:reencode_ctx/0` for more info.
   """
   @type option ::
           {:output_path, Path.t()}
@@ -88,6 +101,8 @@ defmodule ExWebRTC.Recorder.Converter do
           | {:s3_download_config, keyword()}
           | {:thumbnails_ctx, thumbnails_ctx()}
           | {:only_rids, [ExWebRTC.MediaStreamTrack.rid() | nil]}
+          | {:reorder_buffer_size, pos_integer()}
+          | {:reencode_ctx, reencode_ctx()}
 
   @type options :: [option()]
 
@@ -121,17 +136,8 @@ defmodule ExWebRTC.Recorder.Converter do
   end
 
   def convert!(recorder_manifest, options) when map_size(recorder_manifest) > 0 do
-    thumbnails_ctx =
-      case Keyword.get(options, :thumbnails_ctx) do
-        nil ->
-          nil
-
-        ctx ->
-          %{
-            width: ctx[:width] || @default_thumbnail_width,
-            height: ctx[:height] || @default_thumbnail_height
-          }
-      end
+    thumbnails_ctx = get_thumbnails_ctx(options)
+    reencode_ctx = get_reencode_ctx(options)
 
     rid_allowed? =
       case Keyword.get(options, :only_rids) do
@@ -141,6 +147,8 @@ defmodule ExWebRTC.Recorder.Converter do
         allowed_rids ->
           fn rid -> Enum.member?(allowed_rids, rid) end
       end
+
+    reorder_buffer_size = Keyword.get(options, :reorder_buffer_size, @default_reorder_buffer_size)
 
     output_path = Keyword.get(options, :output_path, @default_output_path) |> Path.expand()
     download_path = Keyword.get(options, :download_path, @default_download_path) |> Path.expand()
@@ -155,41 +163,47 @@ defmodule ExWebRTC.Recorder.Converter do
         S3.UploadHandler.new(options[:s3_upload_config])
       end
 
-    output_manifest =
-      recorder_manifest
-      |> fetch_remote_files!(download_path, download_config)
-      |> do_convert_manifest!(output_path, thumbnails_ctx, rid_allowed?)
-
-    result_manifest =
-      if upload_handler != nil do
-        {ref, upload_handler} =
-          output_manifest
-          |> __MODULE__.Manifest.to_upload_handler_manifest()
-          |> then(&S3.UploadHandler.spawn_task(upload_handler, &1))
-
-        # FIXME: Add descriptive errors
-        {:ok, upload_handler_result_manifest, _handler} =
-          receive do
-            {^ref, _res} = task_result ->
-              S3.UploadHandler.process_result(upload_handler, task_result)
-          end
-
-        # UploadHandler spawns a task that gets auto-monitored
-        # We don't want to propagate this message
-        receive do
-          {:DOWN, ^ref, :process, _pid, _reason} -> :ok
-        end
-
-        upload_handler_result_manifest
-        |> __MODULE__.Manifest.from_upload_handler_manifest(output_manifest)
-      else
-        output_manifest
-      end
-
-    result_manifest
+    recorder_manifest
+    |> fetch_remote_files!(download_path, download_config)
+    |> do_convert_manifest!(
+      output_path,
+      thumbnails_ctx,
+      rid_allowed?,
+      reorder_buffer_size,
+      reencode_ctx
+    )
+    |> maybe_upload_result!(upload_handler)
   end
 
   def convert!(_empty_manifest, _options), do: %{}
+
+  defp get_thumbnails_ctx(options) do
+    case Keyword.get(options, :thumbnails_ctx) do
+      nil ->
+        nil
+
+      ctx ->
+        %{
+          width: ctx[:width] || @default_thumbnail_width,
+          height: ctx[:height] || @default_thumbnail_height
+        }
+    end
+  end
+
+  defp get_reencode_ctx(options) do
+    case Keyword.get(options, :reencode_ctx) do
+      nil ->
+        nil
+
+      ctx ->
+        %{
+          threads: ctx[:threads],
+          bitrate: ctx[:bitrate] || @default_reencode_bitrate,
+          gop_size: ctx[:gop_size] || @default_reencode_gop_size,
+          cues_to_front: ctx[:cues_to_front] || @default_reencode_cues_to_front
+        }
+    end
+  end
 
   defp fetch_remote_files!(manifest, dl_path, dl_config) do
     Map.new(manifest, fn {track_id, %{location: location} = track_data} ->
@@ -218,9 +232,16 @@ defmodule ExWebRTC.Recorder.Converter do
     end
   end
 
-  defp do_convert_manifest!(manifest, output_path, thumbnails_ctx, rid_allowed?) do
+  defp do_convert_manifest!(
+         manifest,
+         output_path,
+         thumbnails_ctx,
+         rid_allowed?,
+         reorder_buffer_size,
+         reencode_ctx
+       ) do
     stream_map =
-      Enum.reduce(manifest, %{}, fn {id, track}, stream_map ->
+      Enum.reduce(manifest, %{}, fn {_id, track}, stream_map ->
         %{
           location: path,
           kind: kind,
@@ -233,44 +254,58 @@ defmodule ExWebRTC.Recorder.Converter do
         packets =
           read_packets(
             file,
-            Map.new(rid_map, fn {_rid, rid_idx} -> {rid_idx, %PacketStore{}} end)
+            Map.new(rid_map, fn {_rid, rid_idx} ->
+              {rid_idx, %{store: %PacketStore{}, acc: [], packets_in_store: 0}}
+            end),
+            reorder_buffer_size
           )
 
-        output_metadata =
+        track_contexts =
           case kind do
             :video ->
               rid_map = filter_rids(rid_map, rid_allowed?)
 
-              convert_video_track(id, rid_map, output_path, packets)
+              get_video_track_contexts(rid_map, packets)
 
             :audio ->
-              %{nil: convert_audio_track(id, output_path, packets |> Map.values() |> hd())}
+              %{nil: get_audio_track_context(packets |> Map.values() |> hd())}
           end
 
         stream_id = List.first(streams)
 
         stream_map
         |> Map.put_new(stream_id, %{video: %{}, audio: %{}})
-        |> Map.update!(stream_id, &Map.put(&1, kind, output_metadata))
+        |> Map.update!(stream_id, &Map.put(&1, kind, track_contexts))
       end)
 
     # FIXME: This won't work if we have audio/video only
-    for {stream_id, %{video: video_files, audio: audio_files}} <- stream_map,
-        {rid, %{filename: video_file, start_time: video_start}} <- video_files,
-        {nil, %{filename: audio_file, start_time: audio_start}} <- audio_files,
+    for {stream_id, %{video: video_contexts, audio: audio_contexts}} <- stream_map,
+        {rid, video_ctx} <- video_contexts,
+        {nil, audio_ctx} <- audio_contexts,
         into: %{} do
       output_id = if rid == nil, do: stream_id, else: "#{stream_id}_#{rid}"
       output_file = Path.join(output_path, "#{output_id}.webm")
 
+      video_stream = make_stream(self(), :video)
+      audio_stream = make_stream(self(), :audio)
+
+      {:ok, _sup, pid} = Pipeline.start_link(video_stream, audio_stream, output_file)
+      Process.monitor(pid)
+
+      # FIXME: Possible RC here?
+      emit_packets(pid, video_ctx.packets, audio_ctx.packets)
+
       FFmpeg.combine_av!(
-        Path.join(output_path, video_file),
-        video_start,
-        Path.join(output_path, audio_file),
-        audio_start,
-        output_file
+        output_file <> "_video.webm",
+        video_ctx.start_time,
+        output_file <> "_audio.webm",
+        audio_ctx.start_time,
+        output_file,
+        reencode_ctx
       )
 
-      # TODO: Consider deleting the `.ivf` and `.ogg` files at this point
+      File.rm!(output_file <> "_video.webm")
+      File.rm!(output_file <> "_audio.webm")
 
       stream_manifest = %{
         location: output_file,
@@ -289,94 +324,106 @@ defmodule ExWebRTC.Recorder.Converter do
     end
   end
 
-  defp convert_video_track(id, rid_map, output_path, packets) do
-    for {rid, rid_idx} <- rid_map, into: %{} do
-      filename = if rid == nil, do: "#{id}.ivf", else: "#{id}_#{rid}.ivf"
+  defp maybe_upload_result!(output_manifest, nil) do
+    output_manifest
+  end
 
-      {:ok, writer} =
-        output_path
-        |> Path.join(filename)
-        |> IVF.Writer.open(@ivf_header_opts)
+  defp maybe_upload_result!(output_manifest, upload_handler) do
+    {ref, upload_handler} =
+      output_manifest
+      |> __MODULE__.Manifest.to_upload_handler_manifest()
+      |> then(&S3.UploadHandler.spawn_task(upload_handler, &1))
 
-      {:ok, depayloader} = Depayloader.new(@video_codec_params)
+    # FIXME: Add descriptive errors
+    {:ok, upload_handler_result_manifest, _handler} =
+      receive do
+        {^ref, _res} = task_result ->
+          S3.UploadHandler.process_result(upload_handler, task_result)
+      end
 
-      conversion_state = %{
-        depayloader: depayloader,
-        writer: writer,
-        frames_cnt: 0
-      }
+    # UploadHandler spawns a task that gets auto-monitored
+    # We don't want to propagate this message
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    end
 
-      # Returns the timestamp (in milliseconds) at which the first frame was received
-      start_time = do_convert_video_track(packets[rid_idx], conversion_state)
+    upload_handler_result_manifest
+    |> __MODULE__.Manifest.from_upload_handler_manifest(output_manifest)
+  end
 
-      {rid, %{filename: filename, start_time: start_time}}
+  defp make_stream(pid, kind) do
+    Stream.resource(
+      fn -> pid end,
+      fn pid ->
+        send(pid, {:demand, kind, self()})
+
+        receive do
+          {^kind, nil} ->
+            {:halt, pid}
+
+          {^kind, packet} ->
+            {[packet], pid}
+        end
+      end,
+      fn _pid -> :ok end
+    )
+  end
+
+  defp emit_packets(pipeline_pid, video_packets, audio_packets) do
+    receive do
+      {:demand, :video, pid} ->
+        {p, video_packets} = List.pop_at(video_packets, 0)
+        send(pid, {:video, p})
+        emit_packets(pipeline_pid, video_packets, audio_packets)
+
+      {:demand, :audio, pid} ->
+        {p, audio_packets} = List.pop_at(audio_packets, 0)
+        send(pid, {:audio, p})
+        emit_packets(pipeline_pid, video_packets, audio_packets)
+
+      {:DOWN, _monitor, :process, ^pipeline_pid, _reason} ->
+        :ok
     end
   end
 
-  defp do_convert_video_track([], %{writer: writer} = state) do
-    IVF.Writer.close(writer)
+  defp get_video_track_contexts(rid_map, packets) do
+    for {rid, rid_idx} <- rid_map, into: %{} do
+      {:ok, depayloader} = Depayloader.new(@video_codec_params)
 
-    state[:first_frame_recv_time]
+      start_time = get_start_time(packets[rid_idx], depayloader)
+
+      video_ctx = %{
+        packets: packets[rid_idx],
+        start_time: start_time
+      }
+
+      {rid, video_ctx}
+    end
   end
 
-  defp do_convert_video_track([packet | rest], state) do
-    case Depayloader.depayload(state.depayloader, packet) do
-      {nil, depayloader} ->
-        do_convert_video_track(rest, %{state | depayloader: depayloader})
+  defp get_audio_track_context(packets) do
+    {:ok, depayloader} = Depayloader.new(@audio_codec_params)
 
-      {vp8_frame, depayloader} ->
+    start_time = get_start_time(packets, depayloader)
+
+    %{packets: packets, start_time: start_time}
+  end
+
+  # Returns the timestamp (in milliseconds) at which the first frame was received
+  defp get_start_time([packet | rest], depayloader) do
+    case Depayloader.depayload(depayloader, packet) do
+      {nil, depayloader} ->
+        get_start_time(rest, depayloader)
+
+      {_frame, _depayloader} ->
         {:ok, %ExRTP.Packet.Extension{id: 1, data: <<recv_time::64>>}} =
           ExRTP.Packet.fetch_extension(packet, 1)
 
-        frame = %IVF.Frame{timestamp: state.frames_cnt, data: vp8_frame}
-        {:ok, writer} = IVF.Writer.write_frame(state.writer, frame)
-
-        state =
-          %{state | depayloader: depayloader, writer: writer, frames_cnt: state.frames_cnt + 1}
-          |> Map.put_new(:first_frame_recv_time, recv_time)
-
-        do_convert_video_track(rest, state)
+        recv_time
     end
   end
 
-  defp convert_audio_track(id, output_path, packets) do
-    filename = "#{id}.ogg"
-
-    {:ok, writer} =
-      output_path
-      |> Path.join(filename)
-      |> Ogg.Writer.open()
-
-    {:ok, depayloader} = Depayloader.new(@audio_codec_params)
-
-    # Same behaviour as in `convert_video_track/4`
-    start_time = do_convert_audio_track(packets, %{depayloader: depayloader, writer: writer})
-
-    %{filename: filename, start_time: start_time}
-  end
-
-  defp do_convert_audio_track([], %{writer: writer} = state) do
-    Ogg.Writer.close(writer)
-
-    state[:first_frame_recv_time]
-  end
-
-  defp do_convert_audio_track([packet | rest], state) do
-    {opus_packet, depayloader} = Depayloader.depayload(state.depayloader, packet)
-
-    {:ok, %ExRTP.Packet.Extension{id: 1, data: <<recv_time::64>>}} =
-      ExRTP.Packet.fetch_extension(packet, 1)
-
-    {:ok, writer} = Ogg.Writer.write_packet(state.writer, opus_packet)
-
-    state =
-      %{state | depayloader: depayloader, writer: writer}
-      |> Map.put_new(:first_frame_recv_time, recv_time)
-
-    do_convert_audio_track(rest, state)
-  end
-
-  defp read_packets(file, stores) do
+  defp read_packets(file, state, reorder_buffer_size) do
     case read_packet(file) do
       {:ok, rid_idx, recv_time, packet} ->
         packet =
@@ -385,16 +432,28 @@ defmodule ExWebRTC.Recorder.Converter do
             data: <<recv_time::64>>
           })
 
-        stores = Map.update!(stores, rid_idx, &insert_packet_to_store(&1, packet))
-        read_packets(file, stores)
+        state =
+          if state[rid_idx][:packets_in_store] == reorder_buffer_size do
+            Map.update!(state, rid_idx, &flush_packet_from_store(&1))
+          else
+            state
+          end
+
+        state = Map.update!(state, rid_idx, &insert_packet_to_store(&1, packet))
+        read_packets(file, state, reorder_buffer_size)
 
       {:error, reason} ->
         Logger.warning("Error decoding RTP packet: #{inspect(reason)}")
-        read_packets(file, stores)
+        read_packets(file, state, reorder_buffer_size)
 
       :eof ->
-        Map.new(stores, fn {rid_idx, store} ->
-          {rid_idx, store |> PacketStore.dump() |> Enum.reject(&is_nil/1)}
+        Map.new(state, fn {rid_idx, %{store: store, acc: acc}} ->
+          recent_packets = PacketStore.dump(store)
+
+          packets =
+            acc |> Enum.reverse() |> Stream.concat(recent_packets) |> Enum.reject(&is_nil/1)
+
+          {rid_idx, packets}
         end)
     end
   end
@@ -418,15 +477,22 @@ defmodule ExWebRTC.Recorder.Converter do
     end
   end
 
-  defp insert_packet_to_store(store, packet) do
+  defp insert_packet_to_store(%{store: store, packets_in_store: n} = layer_state, packet) do
     case PacketStore.insert(store, packet) do
       {:ok, store} ->
-        store
+        %{layer_state | store: store, packets_in_store: n + 1}
 
       {:error, :late_packet} ->
         Logger.warning("Decoded late RTP packet")
-        store
+        layer_state
     end
+  end
+
+  defp flush_packet_from_store(%{store: store, packets_in_store: n, acc: acc} = layer_state) do
+    {entry, store} = PacketStore.flush_one(store)
+    packet = if is_nil(entry), do: nil, else: entry.packet
+
+    %{layer_state | store: store, packets_in_store: n - 1, acc: [packet | acc]}
   end
 
   defp filter_rids(rid_map, rid_allowed?) do
