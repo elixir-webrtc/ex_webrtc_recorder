@@ -1,13 +1,20 @@
 defmodule ExWebRTC.Recorder.Converter.Pipeline do
+  # This pipeline:
+  # - takes the sorted RTP packets from Converter,
+  # - depayloads the VP8/Opus media within,
+  # - and dumps them into two separate WEBM files.
+  #
+  # The result file is then generated using FFmpeg.
+  # We have to do it this way, because at the moment `Membrane.Matroska.Muxer` ignores the difference in PTS
+  # of the audio and video tracks, which means we're unable to synchronize them using only Membrane.
+
   defmodule Source do
     @moduledoc false
     use Membrane.Source
 
-    def_options(
-      stream: [
-        spec: Enumerable.t()
-      ]
-    )
+    def_options stream: [
+                  spec: Enumerable.t()
+                ]
 
     def_output_pad(:output, accepted_format: Membrane.RTP, flow_control: :manual)
 
@@ -55,6 +62,7 @@ defmodule ExWebRTC.Recorder.Converter.Pipeline do
   @impl true
   def handle_init(_ctx, opts) do
     # TODO: Support codecs other than VP8/Opus
+    # TODO: Use a single muxer + sink once `Membrane.Matroska.Muxer` supports synchronizing AV
     spec = [
       child(:video_source, %Source{stream: opts.video_stream})
       |> child(:video_depayloader, %Membrane.RTP.DepayloaderBin{

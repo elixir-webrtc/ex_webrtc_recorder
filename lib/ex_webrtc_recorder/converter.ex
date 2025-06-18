@@ -61,9 +61,9 @@ defmodule ExWebRTC.Recorder.Converter do
 
   * `:threads` - How many threads to use. Unlimited by default.
   * `:bitrate` - Video bitrate the VP8 encoder shall strive for. `#{@default_reencode_bitrate}` by default.
-  * `:gop_size` - Keyframe interval. #{@default_reencode_gop_size} by default.
+  * `:gop_size` - Keyframe interval. `#{@default_reencode_gop_size}` by default.
   * `:cues_to_front` - Whether the muxer should put MKV Cues element at the front of the file,
-    to aid with seeking e.g. when streaming the result file. #{@default_reencode_cues_to_front} by default.
+    to aid with seeking e.g. when streaming the result file. `#{@default_reencode_cues_to_front}` by default.
   """
   @type reencode_ctx :: %{
           optional(:threads) => pos_integer(),
@@ -92,6 +92,9 @@ defmodule ExWebRTC.Recorder.Converter do
     Increasing this value may help with "Decoded late RTP packet" warnings,
     but keep in mind that larger values slow the conversion process considerably.
   * `:reencode_ctx` - If passed, Converter will reencode the video using FFmpeg.
+    The keyframe interval of video tracks sent over WebRTC may vary, so this is helpful when
+    you want to generate additional ones, to facilitate accurate seeking in the result file during playback.
+    Keep in mind that reenncoding is slow and resource-intensive.
     See `t:reencode_ctx/0` for more info.
   """
   @type option ::
@@ -240,6 +243,10 @@ defmodule ExWebRTC.Recorder.Converter do
          reorder_buffer_size,
          reencode_ctx
        ) do
+    # What's happening here:
+    # 1. Read tracks
+    # 2. Convert tracks to WEBM files
+    # 3. Mux WEBM files into a single file
     stream_map =
       Enum.reduce(manifest, %{}, fn {_id, track}, stream_map ->
         %{
@@ -264,11 +271,10 @@ defmodule ExWebRTC.Recorder.Converter do
           case kind do
             :video ->
               rid_map = filter_rids(rid_map, rid_allowed?)
-
               get_video_track_contexts(rid_map, packets)
 
             :audio ->
-              %{nil: get_audio_track_context(packets |> Map.values() |> hd())}
+              get_audio_track_context(packets)
           end
 
         stream_id = List.first(streams)
@@ -289,10 +295,14 @@ defmodule ExWebRTC.Recorder.Converter do
       video_stream = make_stream(self(), :video)
       audio_stream = make_stream(self(), :audio)
 
+      # FIXME: Possible RC here: when the pipeline playback starts, the `Stream`s will start sending
+      #        `{:demand, kind, self()}` messages to this process.
+      #        There's no guarantee we'll start listening for these messages (in `emit_packets/3`) soon enough,
+      #        so we may reach a deadlock.
+      #        For now, it seems to work just fine, though.
       {:ok, _sup, pid} = Pipeline.start_link(video_stream, audio_stream, output_file)
       Process.monitor(pid)
 
-      # FIXME: Possible RC here?
       emit_packets(pid, video_ctx.packets, audio_ctx.packets)
 
       FFmpeg.combine_av!(
@@ -401,12 +411,12 @@ defmodule ExWebRTC.Recorder.Converter do
     end
   end
 
-  defp get_audio_track_context(packets) do
+  defp get_audio_track_context(%{nil: packets}) do
     {:ok, depayloader} = Depayloader.new(@audio_codec_params)
 
     start_time = get_start_time(packets, depayloader)
 
-    %{packets: packets, start_time: start_time}
+    %{nil: %{packets: packets, start_time: start_time}}
   end
 
   # Returns the timestamp (in milliseconds) at which the first frame was received
