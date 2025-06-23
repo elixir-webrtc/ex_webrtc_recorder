@@ -1,7 +1,7 @@
 defmodule ExWebRTC.Recorder.MixProject do
   use Mix.Project
 
-  @version "0.2.1"
+  @version "0.3.0"
   @source_url "https://github.com/elixir-webrtc/ex_webrtc_recorder"
 
   def project do
@@ -56,7 +56,7 @@ defmodule ExWebRTC.Recorder.MixProject do
 
   defp deps do
     [
-      {:ex_webrtc, "~> 0.13.0"},
+      {:ex_webrtc, "~> 0.14.0"},
       {:jason, "~> 1.4"},
       {:membrane_core, "~> 1.2"},
       {:membrane_rtp_plugin, "~> 0.31.0"},
