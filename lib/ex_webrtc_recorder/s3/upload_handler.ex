@@ -40,17 +40,17 @@ if Code.ensure_loaded?(ExAws.S3) do
     def spawn_task(
           %__MODULE__{bucket_name: bucket_name, s3_config_overrides: s3_config_overrides} =
             handler,
-          manifest
+          files_to_upload
         ) do
       s3_paths =
-        Map.new(manifest, fn {id, %{location: path}} ->
+        Map.new(files_to_upload, fn {id, %{location: path}} ->
           s3_path = path |> Path.basename() |> then(&Path.join(handler.base_path, &1))
 
           {id, s3_path}
         end)
 
       download_manifest =
-        Map.new(manifest, fn {id, object_data} ->
+        Map.new(files_to_upload, fn {id, object_data} ->
           {:ok, location} = Recorder.S3.Utils.to_url(bucket_name, s3_paths[id])
 
           {id, %{object_data | location: location}}
@@ -60,7 +60,7 @@ if Code.ensure_loaded?(ExAws.S3) do
       #        but this may require a slight change of the current UploadHandler logic
       task =
         Task.Supervisor.async(ExWebRTC.Recorder.TaskSupervisor, fn ->
-          upload(manifest, bucket_name, s3_paths, s3_config_overrides)
+          upload(files_to_upload, bucket_name, s3_paths, s3_config_overrides)
         end)
 
       {task.ref,
@@ -95,8 +95,8 @@ if Code.ensure_loaded?(ExAws.S3) do
       {result, manifest, %__MODULE__{handler | tasks: tasks}}
     end
 
-    defp upload(manifest, bucket_name, s3_paths, s3_config_overrides) do
-      Map.new(manifest, fn {id, %{location: path}} ->
+    defp upload(files_to_upload, bucket_name, s3_paths, s3_config_overrides) do
+      Map.new(files_to_upload, fn {id, %{location: path}} ->
         %{^id => s3_path} = s3_paths
         Logger.debug("Uploading `#{path}` to bucket `#{bucket_name}`, path `#{s3_path}`")
 
