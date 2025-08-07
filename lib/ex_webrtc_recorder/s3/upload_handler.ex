@@ -49,13 +49,7 @@ if Code.ensure_loaded?(ExAws.S3) do
           {id, s3_path}
         end)
 
-      download_manifest =
-        Map.new(files_to_upload, fn {id, object_data} ->
-          {:ok, location} = Recorder.S3.Utils.to_url(bucket_name, s3_paths[id])
-
-          {id, %{object_data | location: location}}
-        end)
-
+      download_manifest = prepare_download_manifest(files_to_upload, bucket_name, s3_paths)
       # FIXME: this links, ideally we should use `async_nolink` instead
       #        but this may require a slight change of the current UploadHandler logic
       task =
@@ -117,6 +111,23 @@ if Code.ensure_loaded?(ExAws.S3) do
 
         {id, result}
       end)
+    end
+
+    defp prepare_download_manifest(files_to_upload, bucket_name, s3_paths) do
+      {manifest_file, track_files} = Map.pop(files_to_upload, "manifest_file")
+
+      download_manifest =
+        Map.new(track_files, fn {id, object_data} ->
+          {:ok, location} = Recorder.S3.Utils.to_url(bucket_name, s3_paths[id])
+          {id, %{object_data | location: location}}
+        end)
+
+      # Update the local manifest file to contain S3 URLs instead of local paths
+      if manifest_file do
+        :ok = File.write!(manifest_file.location, Jason.encode!(download_manifest))
+      end
+
+      download_manifest
     end
   end
 else
