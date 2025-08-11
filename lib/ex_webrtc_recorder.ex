@@ -320,14 +320,13 @@ defmodule ExWebRTC.Recorder do
       end)
 
     manifest_diff = to_manifest(state.track_data, track_ids)
-    files_to_upload = Map.put(manifest_diff, "manifest_file", %{location: state.manifest_path})
 
     case state.upload_handler do
       nil ->
         {manifest_diff, nil, state}
 
       handler ->
-        {ref, handler} = S3.UploadHandler.spawn_task(handler, files_to_upload)
+        {ref, handler} = S3.UploadHandler.spawn_task(handler, manifest_diff)
 
         {manifest_diff, ref, %{state | upload_handler: handler}}
     end
