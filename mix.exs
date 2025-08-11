@@ -56,7 +56,7 @@ defmodule ExWebRTC.Recorder.MixProject do
 
   defp deps do
     [
-      {:ex_webrtc, "~> 0.14.0"},
+      {:ex_webrtc, "~> 0.15.0"},
       {:jason, "~> 1.4"},
       {:membrane_core, "~> 1.2"},
       {:membrane_rtp_plugin, "~> 0.31.0"},

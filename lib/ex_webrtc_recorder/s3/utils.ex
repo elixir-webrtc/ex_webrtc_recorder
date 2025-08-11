@@ -12,7 +12,7 @@ if Code.ensure_loaded?(ExAws.S3) do
 
     @chunk_size 5 * 1024 * 1024
 
-    @spec upload_manifest(Manifest.t(), String.t(), String.t(), keyword()) ::
+    @spec upload_manifest(ExWebRTC.Recorder.Manifest.t(), String.t(), String.t(), keyword()) ::
             {:ok | :error, term()}
     def upload_manifest(manifest, s3_bucket_name, s3_path, s3_config \\ []) do
       manifest
