@@ -24,6 +24,7 @@ defmodule ExWebRTC.Recorder.S3 do
 
   * `:bucket_name` (required) - Name of bucket objects will be uploaded to.
   * `:base_path` - S3 path prefix used for objects uploaded to the bucket. `""` by default.
+  * `:upload_manifest` - Whether to upload the manifest file. Defaults to `true`.
   """
   @type upload_option ::
           {:bucket_name, String.t()} | {:base_path, String.t()} | {:upload_manifest, boolean()}

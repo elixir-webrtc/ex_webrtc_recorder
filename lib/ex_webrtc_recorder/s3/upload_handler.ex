@@ -15,10 +15,10 @@ if Code.ensure_loaded?(ExAws.S3) do
               bucket_name: String.t(),
               base_path: Path.t(),
               tasks: %{ref() => manifest()},
-              upload_manifest: boolean()
+              upload_manifest?: boolean()
             }
 
-    @enforce_keys [:s3_config_overrides, :bucket_name, :base_path, :upload_manifest]
+    @enforce_keys [:s3_config_overrides, :bucket_name, :base_path, :upload_manifest?]
     defstruct @enforce_keys ++ [tasks: %{}]
 
     @spec new(keyword()) :: t()
@@ -28,14 +28,14 @@ if Code.ensure_loaded?(ExAws.S3) do
 
       base_path = Keyword.get(config, :base_path, "")
       {:ok, _test_path} = base_path |> Path.join("a") |> Recorder.S3.Utils.validate_s3_path()
-      upload_manifest = Keyword.get(config, :upload_manifest, false)
+      upload_manifest? = Keyword.get(config, :upload_manifest, true)
 
       s3_config_overrides = Keyword.drop(config, [:bucket_name, :base_path])
 
       %__MODULE__{
         bucket_name: bucket_name,
         base_path: base_path,
-        upload_manifest: upload_manifest,
+        upload_manifest?: upload_manifest?,
         s3_config_overrides: s3_config_overrides
       }
     end
@@ -45,7 +45,7 @@ if Code.ensure_loaded?(ExAws.S3) do
           %__MODULE__{
             bucket_name: bucket_name,
             base_path: base_path,
-            upload_manifest: upload_manifest,
+            upload_manifest?: upload_manifest?,
             s3_config_overrides: s3_config_overrides
           } =
             handler,
@@ -71,12 +71,12 @@ if Code.ensure_loaded?(ExAws.S3) do
         Task.Supervisor.async(ExWebRTC.Recorder.TaskSupervisor, fn ->
           upload(
             manifest,
+            download_manifest,
             bucket_name,
             base_path,
             s3_paths,
             s3_config_overrides,
-            upload_manifest,
-            download_manifest
+            upload_manifest?
           )
         end)
 
@@ -114,12 +114,12 @@ if Code.ensure_loaded?(ExAws.S3) do
 
     defp upload(
            manifest,
+           download_manifest,
            bucket_name,
            base_path,
            s3_paths,
            s3_config_overrides,
-           upload_manifest,
-           download_manifest
+           upload_manifest?
          ) do
       results =
         Map.new(manifest, fn {id, %{location: path}} ->
@@ -144,7 +144,7 @@ if Code.ensure_loaded?(ExAws.S3) do
           {id, result}
         end)
 
-      if upload_manifest do
+      if upload_manifest? do
         manifest_s3_path =
           Path.join(base_path, "manifest.json")
 
