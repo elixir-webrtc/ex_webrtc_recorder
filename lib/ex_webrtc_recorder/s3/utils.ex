@@ -10,6 +10,18 @@ if Code.ensure_loaded?(ExAws.S3) do
       |> ExAws.request(s3_config)
     end
 
+    @chunk_size 5 * 1024 * 1024
+
+    @spec upload_manifest(ExWebRTC.Recorder.Manifest.t(), String.t(), String.t(), keyword()) ::
+            {:ok | :error, term()}
+    def upload_manifest(manifest, s3_bucket_name, s3_path, s3_config \\ []) do
+      manifest
+      |> Jason.encode!()
+      |> ExWebRTC.Utils.chunk(@chunk_size)
+      |> ExAws.S3.upload(s3_bucket_name, s3_path)
+      |> ExAws.request(s3_config)
+    end
+
     @spec fetch_file(String.t(), String.t(), Path.t(), keyword()) :: {:ok | :error, term()}
     def fetch_file(s3_bucket_name, s3_path, output_path, s3_config \\ []) do
       ExAws.S3.download_file(s3_bucket_name, s3_path, output_path)
@@ -67,6 +79,7 @@ else
     @moduledoc false
 
     def upload_file(_, _, _, _ \\ nil), do: error()
+    def upload_manifest(_, _, _, _ \\ nil), do: error()
     def fetch_file(_, _, _, _ \\ nil), do: error()
     def to_url(_, _), do: error()
     def parse_url(_), do: error()
