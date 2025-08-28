@@ -7,6 +7,10 @@ defmodule ExWebRTC.Recorder do
   Can optionally upload the saved files to S3-compatible storage.
   See `ExWebRTC.Recorder.S3` and `t:options/0` for more info.
   """
+  require Protocol
+  Protocol.derive(Jason.Encoder, ExWebRTC.RTPCodecParameters)
+  Protocol.derive(Jason.Encoder, ExSDP.Attribute.FMTP)
+  Protocol.derive(Jason.Encoder, ExSDP.Attribute.RTCPFeedback)
 
   alias ExWebRTC.MediaStreamTrack
   alias __MODULE__.S3
@@ -121,11 +125,12 @@ defmodule ExWebRTC.Recorder do
           recorder(),
           MediaStreamTrack.id(),
           MediaStreamTrack.rid() | nil,
+          ExWebRTC.RTPCodecParameters.t() | nil,
           ExRTP.Packet.t()
         ) :: :ok
-  def record(recorder, track_id, rid, %ExRTP.Packet{} = packet) do
+  def record(recorder, track_id, rid, codec, %ExRTP.Packet{} = packet) do
     recv_time = System.monotonic_time(:millisecond)
-    GenServer.cast(recorder, {:record, track_id, rid, recv_time, packet})
+    GenServer.cast(recorder, {:record, track_id, rid, codec, recv_time, packet})
   end
 
   @doc """
@@ -220,9 +225,11 @@ defmodule ExWebRTC.Recorder do
   end
 
   @impl true
-  def handle_cast({:record, track_id, rid, recv_time, packet}, state)
+  def handle_cast({:record, track_id, rid, codec, recv_time, packet}, state)
       when is_map_key(state.track_data, track_id) do
     %{file: file, rid_map: rid_map} = state.track_data[track_id]
+
+    state = if codec, do: update_codec(state, track_id, codec), else: state
 
     with {:ok, rid_idx} <- Map.fetch(rid_map, rid),
          false <- is_nil(file) do
@@ -243,7 +250,7 @@ defmodule ExWebRTC.Recorder do
   end
 
   @impl true
-  def handle_cast({:record, track_id, _rid, _recv_time, _packet}, state) do
+  def handle_cast({:record, track_id, _rid, _codec, _recv_time, _packet}, state) do
     Logger.warning("""
     Tried to save packet for unknown track id. Ignoring. Track id: #{inspect(track_id)}.\
     """)
@@ -290,6 +297,7 @@ defmodule ExWebRTC.Recorder do
           start_time: start_time,
           kind: track.kind,
           streams: track.streams,
+          codec: nil,
           rid_map: (track.rids || [nil]) |> Enum.with_index() |> Map.new(),
           location: file_path,
           file: File.open!(file_path, [:write])
@@ -340,6 +348,20 @@ defmodule ExWebRTC.Recorder do
     Map.new(track_data, fn {id, track} ->
       {id, Map.delete(track, :file)}
     end)
+  end
+
+  defp update_codec(state, track_id, codec) do
+    case get_in(state, [:track_data, track_id, :codec]) do
+      nil ->
+        updated_track_data = Map.update!(state.track_data, track_id, &Map.put(&1, :codec, codec))
+        state = %{state | track_data: updated_track_data}
+        :ok = File.write!(state.manifest_path, state.track_data |> to_manifest |> Jason.encode!())
+        Logger.info("Updated manifest with codec info for track #{track_id}")
+        state
+
+      _ ->
+        state
+    end
   end
 
   defp serialize_packet(packet, rid_idx, recv_time) do

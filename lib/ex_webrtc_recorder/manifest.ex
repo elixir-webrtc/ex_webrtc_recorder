@@ -20,6 +20,7 @@ defmodule ExWebRTC.Recorder.Manifest do
           kind: :video | :audio,
           streams: [MediaStreamTrack.stream_id()],
           rid_map: %{MediaStreamTrack.rid() => integer()},
+          codec: ExWebRTC.RTPCodecParameters.t() | nil,
           location: location()
         }
 
@@ -38,6 +39,7 @@ defmodule ExWebRTC.Recorder.Manifest do
          "kind" => kind,
          "streams" => streams,
          "rid_map" => rid_map,
+         "codec" => codec,
          "location" => location
        }) do
     %{
@@ -45,7 +47,8 @@ defmodule ExWebRTC.Recorder.Manifest do
       location: location,
       start_time: parse_start_time(start_time),
       rid_map: parse_rid_map(rid_map),
-      kind: parse_kind(kind)
+      kind: parse_kind(kind),
+      codec: codec
     }
   end
 
