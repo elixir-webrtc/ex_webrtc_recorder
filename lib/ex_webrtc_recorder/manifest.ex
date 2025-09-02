@@ -27,8 +27,8 @@ defmodule ExWebRTC.Recorder.Manifest do
   @type t :: %{MediaStreamTrack.id() => track_manifest()}
 
   @doc false
-  @spec to_map(t()) :: map()
-  def to_map(manifest) do
+  @spec to_json!(t()) :: map()
+  def to_json!(manifest) do
     Map.new(manifest, fn {id, entry} ->
       {
         id,

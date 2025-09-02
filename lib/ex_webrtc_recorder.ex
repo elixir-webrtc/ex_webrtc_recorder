@@ -305,14 +305,7 @@ defmodule ExWebRTC.Recorder do
 
     state = %{state | track_data: Map.merge(state.track_data, new_track_data)}
 
-    :ok =
-      File.write!(
-        state.manifest_path,
-        state.track_data
-        |> to_manifest()
-        |> ExWebRTC.Recorder.Manifest.to_map()
-        |> Jason.encode!()
-      )
+    :ok = write_manifest(state)
 
     {manifest_diff, state}
   end
@@ -355,18 +348,9 @@ defmodule ExWebRTC.Recorder do
   defp update_codec(state, track_id, codec) do
     case get_in(state, [:track_data, track_id, :codec]) do
       nil ->
-        updated_track_data = put_in(state.track_data, [track_id, :codec], codec)
-        state = %{state | track_data: updated_track_data}
+        state = put_in(state, [:track_data, track_id, :codec], codec)
 
-        :ok =
-          File.write!(
-            state.manifest_path,
-            state.track_data
-            |> to_manifest
-            |> ExWebRTC.Recorder.Manifest.to_map()
-            |> Jason.encode!()
-          )
-
+        :ok = write_manifest(state)
         Logger.info("Updated manifest with codec info for track #{track_id}")
         state
 
@@ -387,5 +371,15 @@ defmodule ExWebRTC.Recorder do
     # e.g. 20240130-120315
     :io_lib.format("~4..0w~2..0w~2..0w-~2..0w~2..0w~2..0w", [y, mo, d, h, m, s])
     |> to_string()
+  end
+
+  defp write_manifest(state) do
+    File.write!(
+      state.manifest_path,
+      state.track_data
+      |> to_manifest()
+      |> ExWebRTC.Recorder.Manifest.to_json!()
+      |> Jason.encode!()
+    )
   end
 end
