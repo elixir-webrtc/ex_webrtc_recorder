@@ -47,7 +47,7 @@ defmodule ExWebRTC.Recorder.Manifest.Test do
                  audio_id => %{
                    "codec" => %{
                      "channels" => 2,
-                     "clock_rate" => 48000,
+                     "clock_rate" => 48_000,
                      "mime_type" => "audio/opus",
                      "payload_type" => 109,
                      "rtcp_fbs" => nil,
@@ -62,7 +62,7 @@ defmodule ExWebRTC.Recorder.Manifest.Test do
                  video_id => %{
                    "codec" => %{
                      "channels" => nil,
-                     "clock_rate" => 90000,
+                     "clock_rate" => 90_000,
                      "mime_type" => "video/VP8",
                      "payload_type" => 120,
                      "rtcp_fbs" => ["120 nack", "120 nack pli", "120 ccm fir", "120 transport-cc"],
@@ -87,8 +87,7 @@ defmodule ExWebRTC.Recorder.Manifest.Test do
 
     test "two entries(audio,video) manifest" do
       json =
-        Jason.decode!(
-        """
+        Jason.decode!("""
         {
           "6264340764417145606381315372": {
             "codec": {
@@ -134,8 +133,7 @@ defmodule ExWebRTC.Recorder.Manifest.Test do
             ]
           }
         }
-        """
-      )
+        """)
 
       manifest = Manifest.from_json!(json)
 
