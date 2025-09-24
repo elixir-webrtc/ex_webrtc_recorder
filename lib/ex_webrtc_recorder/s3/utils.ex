@@ -2,11 +2,19 @@ if Code.ensure_loaded?(ExAws.S3) do
   defmodule ExWebRTC.Recorder.S3.Utils do
     @moduledoc false
 
+    @chunk_size 5 * 1024 * 1024
+
     @spec upload_file(Path.t(), String.t(), String.t(), keyword()) :: {:ok | :error, term()}
     def upload_file(path, s3_bucket_name, s3_path, s3_config \\ []) do
-      path
-      |> ExAws.S3.Upload.stream_file()
-      |> ExAws.S3.upload(s3_bucket_name, s3_path)
+      case File.stat!(path) do
+        %File.Stat{size: size} when size != :undefined and size <= @chunk_size ->
+          ExAws.S3.put_object(s3_bucket_name, s3_path, File.read!(path))
+
+        _else ->
+          path
+          |> ExAws.S3.Upload.stream_file()
+          |> ExAws.S3.upload(s3_bucket_name, s3_path)
+      end
       |> ExAws.request(s3_config)
     end
 
