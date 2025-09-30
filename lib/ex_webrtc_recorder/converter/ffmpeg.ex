@@ -34,6 +34,7 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
           cues_to_front: cues_to_front
         } ->
           if(threads == nil, do: ~w(), else: ~w(-threads #{threads})) ++
+            # -c:v vp8 -s 1920x1080 -crf 10 -b:v...
             ~w(-c:v vp8 -b:v #{bitrate} -g #{gop_size}) ++
             if cues_to_front, do: ~w(-cues_to_front 1), else: ~w()
       end
@@ -41,9 +42,13 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
     {_io, 0} =
       System.cmd(
         "ffmpeg",
-        ~w(-nostdin -ss #{video_start_time} -i #{video_file} -ss #{audio_start_time} -i #{audio_file}) ++
+        ~w(-nostdin -ss #{video_start_time} -i) ++
+          [video_file] ++
+          ~w(-ss #{audio_start_time} -i) ++
+          [audio_file] ++
           reencode_flags ++
-          ~w(-c:a copy -shortest #{output_file}),
+          ~w(-c:a copy -shortest) ++
+          [output_file],
         stderr_to_stdout: true
       )
 
@@ -57,7 +62,10 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
     {_io, 0} =
       System.cmd(
         "ffmpeg",
-        ~w(-nostdin -i #{file} -vf thumbnail,scale=#{thumbnails_ctx.width}:#{thumbnails_ctx.height} -frames:v 1 #{thumbnail_file}),
+        ~w(-nostdin -i) ++
+          [file] ++
+          ~w(-vf thumbnail,scale=#{thumbnails_ctx.width}:#{thumbnails_ctx.height} -frames:v 1) ++
+          [thumbnail_file],
         stderr_to_stdout: true
       )
 
@@ -69,7 +77,8 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
     {duration, 0} =
       System.cmd(
         "ffprobe",
-        ~w(-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 #{file})
+        ~w(-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1) ++
+          [file]
       )
 
     {duration_seconds, _rest} = Float.parse(duration)

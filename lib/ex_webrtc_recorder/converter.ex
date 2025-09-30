@@ -411,7 +411,7 @@ defmodule ExWebRTC.Recorder.Converter do
     end
   end
 
-  defp get_audio_track_context(%{nil: packets}) do
+  defp get_audio_track_context(%{0 => packets}) do
     {:ok, depayloader} = Depayloader.new(@audio_codec_params)
 
     start_time = get_start_time(packets, depayloader)
