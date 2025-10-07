@@ -59,13 +59,16 @@ defmodule ExWebRTC.Recorder.Converter.Pipeline do
     })
   end
 
+  def video_output(path), do: path <> "_video.webm"
+  def audio_output(path), do: path <> "_audio.webm"
+
   @impl true
   def handle_init(_ctx, opts) do
     # TODO: Support codecs other than VP8/Opus
     # TODO: Use a single muxer + sink once `Membrane.Matroska.Muxer` supports synchronizing AV
     spec =
-      video_spec(opts.video_stream, opts.output_path <> "_video.webm") ++
-        audio_spec(opts.audio_stream, opts.output_path <> "_audio.webm")
+      video_spec(opts.video_stream, opts.output_path) ++
+        audio_spec(opts.audio_stream, opts.output_path)
 
     {[spec: spec], %{sinks_total: length(spec)}}
   end
@@ -89,7 +92,7 @@ defmodule ExWebRTC.Recorder.Converter.Pipeline do
 
   defp video_spec(nil, _), do: []
 
-  defp video_spec(stream, location) do
+  defp video_spec(stream, path) do
     [
       child(:video_source, %Source{stream: stream})
       |> child(:video_depayloader, %Membrane.RTP.DepayloaderBin{
@@ -97,13 +100,13 @@ defmodule ExWebRTC.Recorder.Converter.Pipeline do
         depayloader: Membrane.RTP.VP8.Depayloader
       })
       |> child(:video_muxer, Membrane.Matroska.Muxer)
-      |> child(:video_sink, %Membrane.File.Sink{location: location})
+      |> child(:video_sink, %Membrane.File.Sink{location: video_output(path)})
     ]
   end
 
   defp audio_spec(nil, _), do: []
 
-  defp audio_spec(stream, location) do
+  defp audio_spec(stream, path) do
     [
       child(:audio_source, %Source{stream: stream})
       |> child(:audio_depayloader, %Membrane.RTP.DepayloaderBin{
@@ -112,7 +115,7 @@ defmodule ExWebRTC.Recorder.Converter.Pipeline do
       })
       |> child(:opus_parser, Membrane.Opus.Parser)
       |> child(:audio_muxer, Membrane.Matroska.Muxer)
-      |> child(:audio_sink, %Membrane.File.Sink{location: location})
+      |> child(:audio_sink, %Membrane.File.Sink{location: audio_output(path)})
     ]
   end
 end

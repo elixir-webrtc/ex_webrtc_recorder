@@ -188,7 +188,7 @@ defmodule ExWebRTC.Recorder.Converter do
 
     recorder_manifest
     |> fetch_remote_files!(download_path, download_config)
-    |> do_convert_manifest!(
+    |> convert_manifest!(
       output_path,
       thumbnails_ctx,
       rid_allowed?,
@@ -275,7 +275,7 @@ defmodule ExWebRTC.Recorder.Converter do
   #
   # Conversion
 
-  defp do_convert_manifest!(
+  defp convert_manifest!(
          manifest,
          output_path,
          thumbnails_ctx,
@@ -287,131 +287,110 @@ defmodule ExWebRTC.Recorder.Converter do
     # 1. Read tracks
     # 2. Convert tracks to WEBM files
     # 3. Mux WEBM files into a single file
-    stream_map =
-      Enum.reduce(manifest, %{}, fn {_id, track}, stream_map ->
-        %{
-          location: path,
-          kind: kind,
-          streams: streams,
-          rid_map: rid_map
-        } = track
+    Enum.reduce(manifest, %{}, fn {_id, track}, stream_map ->
+      %{
+        location: path,
+        kind: kind,
+        streams: streams,
+        rid_map: rid_map
+      } = track
 
-        file =
-          with {:ok, %File.Stat{size: s}} <- File.stat(path),
-               true <- s > 0,
-               {:ok, file} <- File.open(path) do
-            file
-          else
-            false ->
-              raise "File #{path} is empty!"
+      file =
+        with {:ok, %File.Stat{size: s}} <- File.stat(path),
+             true <- s > 0,
+             {:ok, file} <- File.open(path) do
+          file
+        else
+          false ->
+            raise "File #{path} is empty!"
 
-            {:error, reason} ->
-              raise "Unable to open #{path}: #{inspect(reason)}"
-          end
+          {:error, reason} ->
+            raise "Unable to open #{path}: #{inspect(reason)}"
+        end
 
-        packets =
-          read_packets(
-            file,
-            Map.new(rid_map, fn {_rid, rid_idx} ->
-              {rid_idx, %{store: %PacketStore{}, acc: [], packets_in_store: 0}}
-            end),
-            reorder_buffer_size
-          )
+      packets =
+        read_packets(
+          file,
+          Map.new(rid_map, fn {_rid, rid_idx} ->
+            {rid_idx, %{store: %PacketStore{}, acc: [], packets_in_store: 0}}
+          end),
+          reorder_buffer_size
+        )
 
-        track_contexts =
-          case kind do
-            :video ->
-              rid_map = filter_rids(rid_map, rid_allowed?)
-              get_video_track_contexts(rid_map, packets)
+      track_contexts =
+        case kind do
+          :video ->
+            rid_map = filter_rids(rid_map, rid_allowed?)
+            get_video_track_contexts(rid_map, packets)
 
-            :audio ->
-              get_audio_track_context(packets)
-          end
+          :audio ->
+            get_audio_track_context(packets)
+        end
 
-        stream_id = List.first(streams)
+      stream_id = List.first(streams)
 
-        stream_map
-        |> Map.put_new(stream_id, %{video: %{}, audio: %{}})
-        |> Map.update!(stream_id, &Map.put(&1, kind, track_contexts))
-      end)
-
-    Enum.flat_map(stream_map, fn {stream_id, %{video: v, audio: a}} ->
-      cond do
-        map_size(v) == 0 and map_size(a) == 0 ->
-          raise "Stream #{stream_id} contains no tracks!"
-
-        map_size(v) == 0 ->
-          %{nil => audio_ctx} = a
-          output_file = Path.join(output_path, "#{stream_id}.webm")
-          output_file |> Path.dirname() |> File.mkdir_p!()
-          [{stream_id, process!(nil, audio_ctx, output_file, nil, nil)}]
-
-        true ->
-          for {rid, video_ctx} <- v do
-            output_id = if rid == nil, do: stream_id, else: "#{stream_id}_#{rid}"
-            output_file = Path.join(output_path, "#{output_id}.webm")
-            output_file |> Path.dirname() |> File.mkdir_p!()
-            {output_id, process!(video_ctx, a[nil], output_file, thumbnails_ctx, reencode_ctx)}
-          end
-      end
+      stream_map
+      |> Map.put_new(stream_id, %{video: %{}, audio: %{}})
+      |> Map.update!(stream_id, &Map.put(&1, kind, track_contexts))
     end)
+    |> Enum.flat_map(&convert_stream!(&1, output_path, thumbnails_ctx, reencode_ctx))
     |> Map.new()
   end
 
-  defp process!(video_ctx, audio_ctx, output_file, thumbnails_ctx, reencode_ctx) do
-    video_stream = if video_ctx, do: make_stream(self(), :video)
-    audio_stream = if audio_ctx, do: make_stream(self(), :audio)
+  defp convert_stream!({stream_id, %{video: video_ctxs, audio: audio_ctxs}}, output_path, thumbnails_ctx, reencode_ctx) do
+    video_ctxs = if map_size(video_ctxs) == 0, do: %{nil: nil}, else: video_ctxs
 
-    # FIXME: Possible RC here: when the pipeline playback starts, the `Stream`s will start sending
-    #        `{:demand, kind, self()}` messages to this process.
-    #        There's no guarantee we'll start listening for these messages (in `emit_packets/3`) soon enough,
-    #        so we may reach a deadlock.
-    #        For now, it seems to work just fine, though.
-    {:ok, _sup, pid} = Pipeline.start_link(video_stream, audio_stream, output_file)
-    Process.monitor(pid)
+    Enum.map(video_ctxs, fn {rid, video_ctx} ->
+      output_id = if rid == nil, do: stream_id, else: "#{stream_id}_#{rid}"
 
-    emit_packets(pid, video_ctx[:packets] || [], audio_ctx[:packets] || [])
+      output_file = Path.join(output_path, "#{output_id}.webm")
+      output_file |> Path.dirname() |> File.mkdir_p!()
+
+      audio_ctx = audio_ctxs[nil]
+      if video_ctx == nil and audio_ctx == nil, do: raise "Stream #{stream_id} contains no tracks!"
+
+      {output_id, convert_file!(video_ctx, audio_ctx, output_file, thumbnails_ctx, reencode_ctx)}
+    end)
+  end
+
+  defp convert_file!(video_ctx, audio_ctx, output_file, thumbnails_ctx, reencode_ctx) do
+    {video_file, audio_file} = run_pipeline(video_ctx, audio_ctx, output_file)
 
     cond do
       video_ctx != nil and audio_ctx != nil ->
         FFmpeg.combine_audio_video!(
-          output_file <> "_video.webm",
+          video_file,
           video_ctx.start_time,
-          output_file <> "_audio.webm",
+          audio_file,
           audio_ctx.start_time,
           output_file,
           reencode_ctx
         )
 
-        File.rm!(output_file <> "_video.webm")
-        File.rm!(output_file <> "_audio.webm")
-
       video_ctx != nil ->
         if reencode_ctx,
-          do: FFmpeg.reencode_video!(output_file <> "_video.webm", output_file, reencode_ctx),
-          else: File.cp!(output_file <> "_video.webm", output_file)
-
-        File.rm!(output_file <> "_video.webm")
+          do: FFmpeg.reencode_video!(video_file, output_file, reencode_ctx),
+          else: File.cp!(video_file, output_file)
 
       true ->
-        File.cp!(output_file <> "_audio.webm", output_file)
-        File.rm!(output_file <> "_audio.webm")
+        File.cp!(audio_file, output_file)
     end
 
-    stream_manifest = %{
+    File.rm(video_file)
+    File.rm(audio_file)
+
+    %{
       location: output_file,
       duration_seconds: FFmpeg.get_duration_in_seconds!(output_file)
     }
+    |> maybe_generate_thumbnail!(output_file, thumbnails_ctx)
+  end
 
-    stream_manifest =
-      if thumbnails_ctx do
-        thumbnail_file = FFmpeg.generate_thumbnail!(output_file, thumbnails_ctx)
-        Map.put(stream_manifest, :thumbnail_location, thumbnail_file)
-      else
-        stream_manifest
-      end
-
-    stream_manifest
+  defp maybe_generate_thumbnail!(stream_manifest, _file, nil), do: stream_manifest
+  defp maybe_generate_thumbnail!(stream_manifest, file, ctx) do
+    file
+    |> FFmpeg.generate_thumbnail!(ctx)
+    |> then(&Map.put(stream_manifest, :thumbnail_location, &1))
   end
 
   #
@@ -531,6 +510,23 @@ defmodule ExWebRTC.Recorder.Converter do
 
   #
   # Passing packets to the `Pipeline` process
+
+  defp run_pipeline(video_ctx, audio_ctx, output_file) do
+    video_stream = if video_ctx, do: make_stream(self(), :video)
+    audio_stream = if audio_ctx, do: make_stream(self(), :audio)
+
+    # FIXME: Possible RC here: when the pipeline playback starts, the `Stream`s will start sending
+    #        `{:demand, kind, self()}` messages to this process.
+    #        There's no guarantee we'll start listening for these messages (in `emit_packets/3`) soon enough,
+    #        so we may reach a deadlock.
+    #        For now, it seems to work just fine, though.
+    {:ok, _sup, pid} = Pipeline.start_link(video_stream, audio_stream, output_file)
+    Process.monitor(pid)
+
+    emit_packets(pid, video_ctx[:packets] || [], audio_ctx[:packets] || [])
+
+    {Pipeline.video_output(output_file), Pipeline.audio_output(output_file)}
+  end
 
   defp make_stream(pid, kind) do
     Stream.resource(
