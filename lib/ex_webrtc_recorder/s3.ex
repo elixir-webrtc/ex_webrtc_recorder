@@ -6,7 +6,7 @@ defmodule ExWebRTC.Recorder.S3 do
   * `:ex_aws_s3`
   * `:ex_aws`
   * `:sweet_xml`
-  * an HTTP client (e.g. `:req`)
+  * an HTTP client (e.g. `:hackney`)
   """
 
   @typedoc """
