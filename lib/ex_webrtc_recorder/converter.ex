@@ -34,26 +34,38 @@ defmodule ExWebRTC.Recorder.Converter do
     channels: 2
   }
 
+  #
+  ## DEFAULT PARAMS
+
   @default_output_path "./converter/output"
   @default_download_path "./converter/download"
-  @default_thumbnail_width 640
-  @default_thumbnail_height -1
   @default_reorder_buffer_size 100
   @default_reencode_bitrate "1.5M"
+  @default_reencode_crf 10
   @default_reencode_gop_size 125
   @default_reencode_cues_to_front true
+
+  #
+  ## PUBLIC TYPES
+
+  @typedoc """
+  Resolution of reencoded video and generated thumbnails.
+
+  Make sure to provide at least one of the dimensions.
+  Setting the other dimension to `-1` will fit the image to the aspect ratio.
+  """
+  @type resolution :: %{
+          optional(:width) => pos_integer() | -1,
+          optional(:height) => pos_integer() | -1
+        }
 
   @typedoc """
   Context for the thumbnail generation.
 
-  * `:width` - Thumbnail width. #{@default_thumbnail_width} by default.
-  * `:height` - Thumbnail height. #{@default_thumbnail_height} by default.
-
-  Setting either of the values to `-1` will fit the size to the aspect ratio.
+  * `:resolution` (required) - Thumbnail size. See `t:resolution/0` for more info.
   """
   @type thumbnails_ctx :: %{
-          optional(:width) => pos_integer() | -1,
-          optional(:height) => pos_integer() | -1
+          :resolution => resolution()
         }
 
   @typedoc """
@@ -61,14 +73,19 @@ defmodule ExWebRTC.Recorder.Converter do
 
   * `:threads` - How many threads to use. Unlimited by default.
   * `:bitrate` - Video bitrate the VP8 encoder shall strive for. `#{@default_reencode_bitrate}` by default.
+  * `:crf` - Output video quality (lower is better). `#{@default_reencode_crf}` by default.
   * `:gop_size` - Keyframe interval. `#{@default_reencode_gop_size}` by default.
+  * `:resolution` - Output video resolution. Inferred from the first video frame by default.
+    See `t:resolution/0` for more info.
   * `:cues_to_front` - Whether the muxer should put MKV Cues element at the front of the file,
     to aid with seeking e.g. when streaming the result file. `#{@default_reencode_cues_to_front}` by default.
   """
   @type reencode_ctx :: %{
           optional(:threads) => pos_integer(),
           optional(:bitrate) => String.t(),
+          optional(:crf) => 4..63,
           optional(:gop_size) => pos_integer(),
+          optional(:resolution) => resolution(),
           optional(:cues_to_front) => boolean()
         }
 
@@ -108,6 +125,9 @@ defmodule ExWebRTC.Recorder.Converter do
           | {:reencode_ctx, reencode_ctx()}
 
   @type options :: [option()]
+
+  #
+  ## PUBLIC FUNCTIONS
 
   @doc """
   Converts the saved dumps of tracks in the manifest to WEBM files.
@@ -180,6 +200,10 @@ defmodule ExWebRTC.Recorder.Converter do
 
   def convert!(_empty_manifest, _options), do: %{}
 
+  #
+  ## PRIVATE FUNCTIONS
+  # Option parsing
+
   defp get_thumbnails_ctx(options) do
     case Keyword.get(options, :thumbnails_ctx) do
       nil ->
@@ -187,8 +211,7 @@ defmodule ExWebRTC.Recorder.Converter do
 
       ctx ->
         %{
-          width: ctx[:width] || @default_thumbnail_width,
-          height: ctx[:height] || @default_thumbnail_height
+          resolution: fill_resolution_dimensions(ctx.resolution)
         }
     end
   end
@@ -202,11 +225,25 @@ defmodule ExWebRTC.Recorder.Converter do
         %{
           threads: ctx[:threads],
           bitrate: ctx[:bitrate] || @default_reencode_bitrate,
+          crf: ctx[:crf] || @default_reencode_crf,
           gop_size: ctx[:gop_size] || @default_reencode_gop_size,
+          resolution: fill_resolution_dimensions(ctx[:resolution]),
           cues_to_front: ctx[:cues_to_front] || @default_reencode_cues_to_front
         }
     end
   end
+
+  defp fill_resolution_dimensions(nil), do: nil
+
+  defp fill_resolution_dimensions(resolution) do
+    %{
+      width: resolution[:width] || -1,
+      height: resolution[:height] || -1
+    }
+  end
+
+  #
+  # Downloading input files
 
   defp fetch_remote_files!(manifest, dl_path, dl_config) do
     Map.new(manifest, fn {track_id, %{location: location} = track_data} ->
@@ -235,6 +272,9 @@ defmodule ExWebRTC.Recorder.Converter do
     end
   end
 
+  #
+  # Conversion
+
   defp do_convert_manifest!(
          manifest,
          output_path,
@@ -256,7 +296,18 @@ defmodule ExWebRTC.Recorder.Converter do
           rid_map: rid_map
         } = track
 
-        file = File.open!(path)
+        file =
+          with {:ok, %File.Stat{size: s}} <- File.stat(path),
+               true <- s > 0,
+               {:ok, file} <- File.open(path) do
+            file
+          else
+            false ->
+              raise "File #{path} is empty!"
+
+            {:error, reason} ->
+              raise "Unable to open #{path}: #{inspect(reason)}"
+          end
 
         packets =
           read_packets(
@@ -284,154 +335,87 @@ defmodule ExWebRTC.Recorder.Converter do
         |> Map.update!(stream_id, &Map.put(&1, kind, track_contexts))
       end)
 
-    # FIXME: This won't work if we have audio/video only
-    for {stream_id, %{video: video_contexts, audio: audio_contexts}} <- stream_map,
-        {rid, video_ctx} <- video_contexts,
-        {nil, audio_ctx} <- audio_contexts,
-        into: %{} do
-      output_id = if rid == nil, do: stream_id, else: "#{stream_id}_#{rid}"
-      output_file = Path.join(output_path, "#{output_id}.webm")
+    Enum.flat_map(stream_map, fn {stream_id, %{video: v, audio: a}} ->
+      cond do
+        map_size(v) == 0 and map_size(a) == 0 ->
+          raise "Stream #{stream_id} contains no tracks!"
 
-      video_stream = make_stream(self(), :video)
-      audio_stream = make_stream(self(), :audio)
+        map_size(v) == 0 ->
+          %{nil => audio_ctx} = a
+          output_file = Path.join(output_path, "#{stream_id}.webm")
+          output_file |> Path.dirname() |> File.mkdir_p!()
+          [{stream_id, process!(nil, audio_ctx, output_file, nil, nil)}]
 
-      # FIXME: Possible RC here: when the pipeline playback starts, the `Stream`s will start sending
-      #        `{:demand, kind, self()}` messages to this process.
-      #        There's no guarantee we'll start listening for these messages (in `emit_packets/3`) soon enough,
-      #        so we may reach a deadlock.
-      #        For now, it seems to work just fine, though.
-      {:ok, _sup, pid} = Pipeline.start_link(video_stream, audio_stream, output_file)
-      Process.monitor(pid)
+        true ->
+          for {rid, video_ctx} <- v do
+            output_id = if rid == nil, do: stream_id, else: "#{stream_id}_#{rid}"
+            output_file = Path.join(output_path, "#{output_id}.webm")
+            output_file |> Path.dirname() |> File.mkdir_p!()
+            {output_id, process!(video_ctx, a[nil], output_file, thumbnails_ctx, reencode_ctx)}
+          end
+      end
+    end)
+    |> Map.new()
+  end
 
-      emit_packets(pid, video_ctx.packets, audio_ctx.packets)
+  defp process!(video_ctx, audio_ctx, output_file, thumbnails_ctx, reencode_ctx) do
+    video_stream = if video_ctx, do: make_stream(self(), :video)
+    audio_stream = if audio_ctx, do: make_stream(self(), :audio)
 
-      FFmpeg.combine_av!(
-        output_file <> "_video.webm",
-        video_ctx.start_time,
-        output_file <> "_audio.webm",
-        audio_ctx.start_time,
-        output_file,
-        reencode_ctx
-      )
+    # FIXME: Possible RC here: when the pipeline playback starts, the `Stream`s will start sending
+    #        `{:demand, kind, self()}` messages to this process.
+    #        There's no guarantee we'll start listening for these messages (in `emit_packets/3`) soon enough,
+    #        so we may reach a deadlock.
+    #        For now, it seems to work just fine, though.
+    {:ok, _sup, pid} = Pipeline.start_link(video_stream, audio_stream, output_file)
+    Process.monitor(pid)
 
-      File.rm!(output_file <> "_video.webm")
-      File.rm!(output_file <> "_audio.webm")
+    emit_packets(pid, video_ctx[:packets] || [], audio_ctx[:packets] || [])
 
-      stream_manifest = %{
-        location: output_file,
-        duration_seconds: FFmpeg.get_duration_in_seconds!(output_file)
-      }
+    cond do
+      video_ctx != nil and audio_ctx != nil ->
+        FFmpeg.combine_audio_video!(
+          output_file <> "_video.webm",
+          video_ctx.start_time,
+          output_file <> "_audio.webm",
+          audio_ctx.start_time,
+          output_file,
+          reencode_ctx
+        )
 
-      stream_manifest =
-        if thumbnails_ctx do
-          thumbnail_file = FFmpeg.generate_thumbnail!(output_file, thumbnails_ctx)
-          Map.put(stream_manifest, :thumbnail_location, thumbnail_file)
-        else
-          stream_manifest
-        end
+        File.rm!(output_file <> "_video.webm")
+        File.rm!(output_file <> "_audio.webm")
 
-      {output_id, stream_manifest}
+      video_ctx != nil ->
+        if reencode_ctx,
+          do: FFmpeg.reencode_video!(output_file <> "_video.webm", output_file, reencode_ctx),
+          else: File.cp!(output_file <> "_video.webm", output_file)
+
+        File.rm!(output_file <> "_video.webm")
+
+      true ->
+        File.cp!(output_file <> "_audio.webm", output_file)
+        File.rm!(output_file <> "_audio.webm")
     end
-  end
 
-  defp maybe_upload_result!(output_manifest, nil) do
-    output_manifest
-  end
+    stream_manifest = %{
+      location: output_file,
+      duration_seconds: FFmpeg.get_duration_in_seconds!(output_file)
+    }
 
-  defp maybe_upload_result!(output_manifest, upload_handler) do
-    {ref, upload_handler} =
-      output_manifest
-      |> __MODULE__.Manifest.to_upload_handler_manifest()
-      |> then(&S3.UploadHandler.spawn_task(upload_handler, &1))
-
-    # FIXME: Add descriptive errors
-    {:ok, upload_handler_result_manifest, _handler} =
-      receive do
-        {^ref, _res} = task_result ->
-          S3.UploadHandler.process_result(upload_handler, task_result)
+    stream_manifest =
+      if thumbnails_ctx do
+        thumbnail_file = FFmpeg.generate_thumbnail!(output_file, thumbnails_ctx)
+        Map.put(stream_manifest, :thumbnail_location, thumbnail_file)
+      else
+        stream_manifest
       end
 
-    # UploadHandler spawns a task that gets auto-monitored
-    # We don't want to propagate this message
-    receive do
-      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
-    end
-
-    upload_handler_result_manifest
-    |> __MODULE__.Manifest.from_upload_handler_manifest(output_manifest)
+    stream_manifest
   end
 
-  defp make_stream(pid, kind) do
-    Stream.resource(
-      fn -> pid end,
-      fn pid ->
-        send(pid, {:demand, kind, self()})
-
-        receive do
-          {^kind, nil} ->
-            {:halt, pid}
-
-          {^kind, packet} ->
-            {[packet], pid}
-        end
-      end,
-      fn _pid -> :ok end
-    )
-  end
-
-  defp emit_packets(pipeline_pid, video_packets, audio_packets) do
-    receive do
-      {:demand, :video, pid} ->
-        {p, video_packets} = List.pop_at(video_packets, 0)
-        send(pid, {:video, p})
-        emit_packets(pipeline_pid, video_packets, audio_packets)
-
-      {:demand, :audio, pid} ->
-        {p, audio_packets} = List.pop_at(audio_packets, 0)
-        send(pid, {:audio, p})
-        emit_packets(pipeline_pid, video_packets, audio_packets)
-
-      {:DOWN, _monitor, :process, ^pipeline_pid, _reason} ->
-        :ok
-    end
-  end
-
-  defp get_video_track_contexts(rid_map, packets) do
-    for {rid, rid_idx} <- rid_map, into: %{} do
-      {:ok, depayloader} = Depayloader.new(@video_codec_params)
-
-      start_time = get_start_time(packets[rid_idx], depayloader)
-
-      video_ctx = %{
-        packets: packets[rid_idx],
-        start_time: start_time
-      }
-
-      {rid, video_ctx}
-    end
-  end
-
-  defp get_audio_track_context(%{0 => packets}) do
-    {:ok, depayloader} = Depayloader.new(@audio_codec_params)
-
-    start_time = get_start_time(packets, depayloader)
-
-    %{nil: %{packets: packets, start_time: start_time}}
-  end
-
-  # Returns the timestamp (in milliseconds) at which the first frame was received
-  defp get_start_time([packet | rest], depayloader) do
-    case Depayloader.depayload(depayloader, packet) do
-      {nil, depayloader} ->
-        get_start_time(rest, depayloader)
-
-      {_frame, _depayloader} ->
-        {:ok, %ExRTP.Packet.Extension{id: 1, data: <<recv_time::64>>}} =
-          ExRTP.Packet.fetch_extension(packet, 1)
-
-        recv_time
-    end
-  end
+  #
+  # Reading and reordering captured packets
 
   defp read_packets(file, state, reorder_buffer_size) do
     case read_packet(file) do
@@ -504,6 +488,117 @@ defmodule ExWebRTC.Recorder.Converter do
 
     %{layer_state | store: store, packets_in_store: n - 1, acc: [packet | acc]}
   end
+
+  #
+  # Extracting track metadata
+
+  defp get_video_track_contexts(rid_map, packets) do
+    for {rid, rid_idx} <- rid_map, into: %{} do
+      {:ok, depayloader} = Depayloader.new(@video_codec_params)
+
+      start_time = get_start_time(packets[rid_idx], depayloader)
+
+      video_ctx = %{
+        packets: packets[rid_idx],
+        start_time: start_time
+      }
+
+      {rid, video_ctx}
+    end
+  end
+
+  defp get_audio_track_context(%{0 => packets}) do
+    {:ok, depayloader} = Depayloader.new(@audio_codec_params)
+
+    start_time = get_start_time(packets, depayloader)
+
+    %{nil: %{packets: packets, start_time: start_time}}
+  end
+
+  # Returns the timestamp (in milliseconds) at which the first frame was received
+  defp get_start_time([packet | rest], depayloader) do
+    case Depayloader.depayload(depayloader, packet) do
+      {nil, depayloader} ->
+        get_start_time(rest, depayloader)
+
+      {_frame, _depayloader} ->
+        {:ok, %ExRTP.Packet.Extension{id: 1, data: <<recv_time::64>>}} =
+          ExRTP.Packet.fetch_extension(packet, 1)
+
+        recv_time
+    end
+  end
+
+  #
+  # Passing packets to the `Pipeline` process
+
+  defp make_stream(pid, kind) do
+    Stream.resource(
+      fn -> pid end,
+      fn pid ->
+        send(pid, {:demand, kind, self()})
+
+        receive do
+          {^kind, nil} ->
+            {:halt, pid}
+
+          {^kind, packet} ->
+            {[packet], pid}
+        end
+      end,
+      fn _pid -> :ok end
+    )
+  end
+
+  defp emit_packets(pipeline_pid, video_packets, audio_packets) do
+    receive do
+      {:demand, :video, pid} ->
+        {p, video_packets} = List.pop_at(video_packets, 0)
+        send(pid, {:video, p})
+        emit_packets(pipeline_pid, video_packets, audio_packets)
+
+      {:demand, :audio, pid} ->
+        {p, audio_packets} = List.pop_at(audio_packets, 0)
+        send(pid, {:audio, p})
+        emit_packets(pipeline_pid, video_packets, audio_packets)
+
+      {:DOWN, _monitor, :process, ^pipeline_pid, _reason} ->
+        :ok
+    end
+  end
+
+  #
+  # Uploading output files
+
+  defp maybe_upload_result!(output_manifest, nil) do
+    output_manifest
+  end
+
+  defp maybe_upload_result!(output_manifest, upload_handler) do
+    {ref, upload_handler} =
+      output_manifest
+      |> __MODULE__.Manifest.to_upload_handler_manifest()
+      |> then(&S3.UploadHandler.spawn_task(upload_handler, &1))
+
+    # FIXME: Add descriptive errors
+    {:ok, upload_handler_result_manifest, _handler} =
+      receive do
+        {^ref, _res} = task_result ->
+          S3.UploadHandler.process_result(upload_handler, task_result)
+      end
+
+    # UploadHandler spawns a task that gets auto-monitored
+    # We don't want to propagate this message
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    end
+
+    upload_handler_result_manifest
+    |> __MODULE__.Manifest.from_upload_handler_manifest(output_manifest)
+  end
+
+  #
+  # Helpers
 
   defp filter_rids(rid_map, rid_allowed?) do
     Map.filter(rid_map, fn {rid, _rid_idx} -> rid_allowed?.(rid) end)

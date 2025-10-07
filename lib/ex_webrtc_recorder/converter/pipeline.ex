@@ -63,25 +63,11 @@ defmodule ExWebRTC.Recorder.Converter.Pipeline do
   def handle_init(_ctx, opts) do
     # TODO: Support codecs other than VP8/Opus
     # TODO: Use a single muxer + sink once `Membrane.Matroska.Muxer` supports synchronizing AV
-    spec = [
-      child(:video_source, %Source{stream: opts.video_stream})
-      |> child(:video_depayloader, %Membrane.RTP.DepayloaderBin{
-        clock_rate: 90_000,
-        depayloader: Membrane.RTP.VP8.Depayloader
-      })
-      |> child(:video_muxer, Membrane.Matroska.Muxer)
-      |> child(:video_sink, %Membrane.File.Sink{location: opts.output_path <> "_video.webm"}),
-      child(:audio_source, %Source{stream: opts.audio_stream})
-      |> child(:audio_depayloader, %Membrane.RTP.DepayloaderBin{
-        clock_rate: 48_000,
-        depayloader: Membrane.RTP.Opus.Depayloader
-      })
-      |> child(:opus_parser, Membrane.Opus.Parser)
-      |> child(:audio_muxer, Membrane.Matroska.Muxer)
-      |> child(:audio_sink, %Membrane.File.Sink{location: opts.output_path <> "_audio.webm"})
-    ]
+    spec =
+      video_spec(opts.video_stream, opts.output_path <> "_video.webm") ++
+        audio_spec(opts.audio_stream, opts.output_path <> "_audio.webm")
 
-    {[spec: spec], %{}}
+    {[spec: spec], %{sinks_total: length(spec)}}
   end
 
   @impl true
@@ -89,7 +75,7 @@ defmodule ExWebRTC.Recorder.Converter.Pipeline do
       when sink in [:video_sink, :audio_sink] do
     state = Map.update(state, :sinks_done, 1, &(&1 + 1))
 
-    if state.sinks_done == 2 do
+    if state.sinks_done == state.sinks_total do
       {[terminate: :normal], state}
     else
       {[], state}
@@ -99,5 +85,34 @@ defmodule ExWebRTC.Recorder.Converter.Pipeline do
   @impl true
   def handle_element_end_of_stream(_element, _pad, _ctx, state) do
     {[], state}
+  end
+
+  defp video_spec(nil, _), do: []
+
+  defp video_spec(stream, location) do
+    [
+      child(:video_source, %Source{stream: stream})
+      |> child(:video_depayloader, %Membrane.RTP.DepayloaderBin{
+        clock_rate: 90_000,
+        depayloader: Membrane.RTP.VP8.Depayloader
+      })
+      |> child(:video_muxer, Membrane.Matroska.Muxer)
+      |> child(:video_sink, %Membrane.File.Sink{location: location})
+    ]
+  end
+
+  defp audio_spec(nil, _), do: []
+
+  defp audio_spec(stream, location) do
+    [
+      child(:audio_source, %Source{stream: stream})
+      |> child(:audio_depayloader, %Membrane.RTP.DepayloaderBin{
+        clock_rate: 48_000,
+        depayloader: Membrane.RTP.Opus.Depayloader
+      })
+      |> child(:opus_parser, Membrane.Opus.Parser)
+      |> child(:audio_muxer, Membrane.Matroska.Muxer)
+      |> child(:audio_sink, %Membrane.File.Sink{location: location})
+    ]
   end
 end
