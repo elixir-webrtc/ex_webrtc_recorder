@@ -337,7 +337,12 @@ defmodule ExWebRTC.Recorder.Converter do
     |> Map.new()
   end
 
-  defp convert_stream!({stream_id, %{video: video_ctxs, audio: audio_ctxs}}, output_path, thumbnails_ctx, reencode_ctx) do
+  defp convert_stream!(
+         {stream_id, %{video: video_ctxs, audio: audio_ctxs}},
+         output_path,
+         thumbnails_ctx,
+         reencode_ctx
+       ) do
     video_ctxs = if map_size(video_ctxs) == 0, do: %{nil: nil}, else: video_ctxs
 
     Enum.map(video_ctxs, fn {rid, video_ctx} ->
@@ -347,7 +352,9 @@ defmodule ExWebRTC.Recorder.Converter do
       output_file |> Path.dirname() |> File.mkdir_p!()
 
       audio_ctx = audio_ctxs[nil]
-      if video_ctx == nil and audio_ctx == nil, do: raise "Stream #{stream_id} contains no tracks!"
+
+      if video_ctx == nil and audio_ctx == nil,
+        do: raise("Stream #{stream_id} contains no tracks!")
 
       {output_id, convert_file!(video_ctx, audio_ctx, output_file, thumbnails_ctx, reencode_ctx)}
     end)
@@ -387,6 +394,7 @@ defmodule ExWebRTC.Recorder.Converter do
   end
 
   defp maybe_generate_thumbnail!(stream_manifest, _file, nil), do: stream_manifest
+
   defp maybe_generate_thumbnail!(stream_manifest, file, ctx) do
     file
     |> FFmpeg.generate_thumbnail!(ctx)
