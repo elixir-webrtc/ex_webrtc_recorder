@@ -68,7 +68,7 @@ defmodule ExWebRTC.Recorder.MixProject do
       {:ex_aws_s3, "~> 2.5", optional: true},
       {:ex_aws, "~> 2.5", optional: true},
       {:sweet_xml, "~> 0.7", optional: true},
-      {:req, "~> 0.5", optional: true},
+      {:hackney, "~> 1.9", optional: true},
 
       # dev/test
       {:excoveralls, "~> 0.18.0", only: [:dev, :test], runtime: false},

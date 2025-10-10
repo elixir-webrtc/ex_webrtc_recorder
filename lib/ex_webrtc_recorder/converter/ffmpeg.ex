@@ -3,7 +3,26 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
 
   alias ExWebRTC.Recorder.Converter
 
-  @spec combine_av!(
+  # FIXME: When the VM exits, FFmpeg processes started by this module keep running
+  #        See https://hexdocs.pm/elixir/1.18.4/Port.html#module-zombie-operating-system-processes
+  #        for ideas on tackling this issue
+
+  @spec reencode_video!(Path.t(), Path.t(), Converter.reencode_ctx()) :: Path.t() | no_return()
+  def reencode_video!(video_file, output_file, reencode_ctx) do
+    {_io, 0} =
+      System.cmd(
+        "ffmpeg",
+        ~w(-nostdin) ++
+          input_flags(video_file) ++
+          reencode_flags(reencode_ctx) ++
+          [output_file],
+        stderr_to_stdout: true
+      )
+
+    output_file
+  end
+
+  @spec combine_audio_video!(
           Path.t(),
           integer(),
           Path.t(),
@@ -11,7 +30,7 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
           Path.t(),
           Converter.reencode_ctx() | nil
         ) :: Path.t() | no_return()
-  def combine_av!(
+  def combine_audio_video!(
         video_file,
         video_start_timestamp_ms,
         audio_file,
@@ -22,28 +41,15 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
     {video_start_time, audio_start_time} =
       calculate_start_times(video_start_timestamp_ms, audio_start_timestamp_ms)
 
-    reencode_flags =
-      case reencode_ctx do
-        nil ->
-          ~w(-c:v copy)
-
-        %{
-          threads: threads,
-          bitrate: bitrate,
-          gop_size: gop_size,
-          cues_to_front: cues_to_front
-        } ->
-          if(threads == nil, do: ~w(), else: ~w(-threads #{threads})) ++
-            ~w(-c:v vp8 -b:v #{bitrate} -g #{gop_size}) ++
-            if cues_to_front, do: ~w(-cues_to_front 1), else: ~w()
-      end
-
     {_io, 0} =
       System.cmd(
         "ffmpeg",
-        ~w(-nostdin -ss #{video_start_time} -i #{video_file} -ss #{audio_start_time} -i #{audio_file}) ++
-          reencode_flags ++
-          ~w(-c:a copy -shortest #{output_file}),
+        ~w(-nostdin) ++
+          input_flags(video_file, video_start_time) ++
+          input_flags(audio_file, audio_start_time) ++
+          reencode_flags(reencode_ctx) ++
+          ~w(-c:a copy -shortest) ++
+          [output_file],
         stderr_to_stdout: true
       )
 
@@ -57,7 +63,10 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
     {_io, 0} =
       System.cmd(
         "ffmpeg",
-        ~w(-nostdin -i #{file} -vf thumbnail,scale=#{thumbnails_ctx.width}:#{thumbnails_ctx.height} -frames:v 1 #{thumbnail_file}),
+        ~w(-nostdin) ++
+          input_flags(file) ++
+          ~w(-vf thumbnail,#{scale_filter(thumbnails_ctx.resolution)} -frames:v 1) ++
+          [thumbnail_file],
         stderr_to_stdout: true
       )
 
@@ -69,12 +78,35 @@ defmodule ExWebRTC.Recorder.Converter.FFmpeg do
     {duration, 0} =
       System.cmd(
         "ffprobe",
-        ~w(-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 #{file})
+        ~w(-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1) ++
+          [file]
       )
 
     {duration_seconds, _rest} = Float.parse(duration)
     round(duration_seconds)
   end
+
+  defp reencode_flags(nil), do: ~w(-c:v copy)
+
+  defp reencode_flags(%{
+         threads: threads,
+         crf: crf,
+         bitrate: bitrate,
+         gop_size: gop_size,
+         resolution: resolution,
+         cues_to_front: cues_to_front
+       }) do
+    if(threads == nil, do: ~w(), else: ~w(-threads #{threads})) ++
+      ~w(-c:v vp8 -crf #{crf} -b:v #{bitrate} -g #{gop_size}) ++
+      if(resolution, do: ~w(-vf #{scale_filter(resolution)}), else: ~w()) ++
+      if cues_to_front, do: ~w(-cues_to_front 1), else: ~w()
+  end
+
+  defp input_flags(path, start_time \\ nil)
+  defp input_flags(path, nil), do: ["-i", path]
+  defp input_flags(path, start_time), do: ["-ss", start_time, "-i", path]
+
+  defp scale_filter(%{width: width, height: height}), do: "scale=#{width}:#{height}"
 
   defp calculate_start_times(video_start_ms, audio_start_ms)
        when is_nil(video_start_ms) or is_nil(audio_start_ms) do

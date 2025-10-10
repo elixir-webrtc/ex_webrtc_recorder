@@ -32,7 +32,7 @@ def deps do
     {:ex_aws_s3, "~> 2.5"},
     {:ex_aws, "~> 2.5"},
     {:sweet_xml, "~> 0.7"},
-    {:req, "~> 0.5"}         # or any other HTTP client supported by `ex_aws`
+    {:hackney, "~> 1.9"}         # or any other HTTP client supported by `ex_aws`
   ]
 end
 ```
