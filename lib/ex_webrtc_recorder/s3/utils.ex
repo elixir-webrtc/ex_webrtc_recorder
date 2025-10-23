@@ -22,6 +22,7 @@ if Code.ensure_loaded?(ExAws.S3) do
             {:ok | :error, term()}
     def upload_manifest(manifest, s3_bucket_name, s3_path, s3_config \\ []) do
       manifest
+      |> ExWebRTC.Recorder.Manifest.to_json!()
       |> Jason.encode!()
       |> ExWebRTC.Utils.chunk(@chunk_size)
       |> ExAws.S3.upload(s3_bucket_name, s3_path)
