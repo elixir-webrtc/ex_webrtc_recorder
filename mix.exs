@@ -1,7 +1,7 @@
 defmodule ExWebRTC.Recorder.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
   @source_url "https://github.com/elixir-webrtc/ex_webrtc_recorder"
 
   def project do
@@ -26,8 +26,13 @@ defmodule ExWebRTC.Recorder.MixProject do
       ],
 
       # code coverage
-      test_coverage: [tool: ExCoveralls],
-      preferred_cli_env: [
+      test_coverage: [tool: ExCoveralls]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
         coveralls: :test,
         "coveralls.detail": :test,
         "coveralls.post": :test,
@@ -56,7 +61,7 @@ defmodule ExWebRTC.Recorder.MixProject do
 
   defp deps do
     [
-      {:ex_webrtc, "~> 0.15.0"},
+      {:ex_webrtc, "~> 0.17.0"},
       {:jason, "~> 1.4"},
       {:membrane_core, "~> 1.2"},
       {:membrane_rtp_plugin, "~> 0.31.0"},
